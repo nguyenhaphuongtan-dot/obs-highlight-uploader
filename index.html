@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>OBS Highlight Uploader</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+<main class="container">
+  <h1>OBS Highlight Uploader</h1>
+  <button id="pick-btn">Chọn file MKV</button>
+  <p id="file-path">Chưa chọn file</p>
+  <pre id="info"></pre>
+
+  <button id="convert-btn" disabled>Chuyển sang MP4</button>
+  <div id="progress-wrap" hidden>
+    <div id="progress-bar"></div>
+  </div>
+  <p id="status"></p>
+</main>
+  </body>
+</html>
