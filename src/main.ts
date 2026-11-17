@@ -1,9 +1,12 @@
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save, ask } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+
 const pickBtn = document.querySelector<HTMLButtonElement>("#pick-btn")!;
 const convertBtn = document.querySelector<HTMLButtonElement>("#convert-btn")!;
+const openBtn = document.querySelector<HTMLButtonElement>("#open-btn")!;
 const label = document.querySelector<HTMLParagraphElement>("#file-path")!;
 const info = document.querySelector<HTMLPreElement>("#info")!;
 const progressWrap = document.querySelector<HTMLDivElement>("#progress-wrap")!;
@@ -11,6 +14,7 @@ const progressBar = document.querySelector<HTMLDivElement>("#progress-bar")!;
 const status = document.querySelector<HTMLParagraphElement>("#status")!;
 
 let currentPath = "";
+let outputPath = "";
 let durationMs = 0;
 let audioIsAac = false;
 
@@ -33,6 +37,7 @@ pickBtn.addEventListener("click", async () => {
   info.textContent = "Đang đọc thông tin...";
   status.textContent = "";
   progressWrap.hidden = true;
+  openBtn.hidden = true;
   convertBtn.disabled = true;
 
   try {
@@ -62,10 +67,36 @@ pickBtn.addEventListener("click", async () => {
 });
 
 convertBtn.addEventListener("click", async () => {
-  const output = currentPath.replace(/\.mkv$/i, ".mp4");
+    const gameRunning = await invoke<boolean>("is_game_running");
+  if (gameRunning) {
+    const proceed = await ask(
+      "Valorant đang chạy. Chuyển video lúc này có thể làm giảm FPS. Bạn vẫn muốn tiếp tục?",
+      {
+        title: "Cảnh báo",
+        kind: "warning",
+        okLabel: "Vẫn chuyển",
+        cancelLabel: "Để sau",
+      }
+    );
+    if (!proceed) return;
+  }
+  const suggested = currentPath.replace(/\.mkv$/i, ".mp4");
+  const chosen = await save({
+    defaultPath: suggested,
+    filters: [{ name: "MP4", extensions: ["mp4"] }],
+  });
+  if (!chosen) return; // người dùng bấm Hủy
 
+  // Không cho ghi đè chính file nguồn
+  if (chosen.toLowerCase() === currentPath.toLowerCase()) {
+    status.textContent = "Lỗi: file đầu ra không được trùng file nguồn.";
+    return;
+  }
+
+  outputPath = chosen;
   convertBtn.disabled = true;
   pickBtn.disabled = true;
+  openBtn.hidden = true;
   progressBar.style.width = "0%";
   progressWrap.hidden = false;
   status.textContent = "Đang chuyển...";
@@ -73,15 +104,20 @@ convertBtn.addEventListener("click", async () => {
   try {
     await invoke("remux_video", {
       input: currentPath,
-      output,
+      output: outputPath,
       copyAudio: audioIsAac,
     });
     progressBar.style.width = "100%";
-    status.textContent = "Hoàn tất! File đã lưu tại: " + output;
+    status.textContent = "Hoàn tất! File đã lưu tại: " + outputPath;
+    openBtn.hidden = false;
   } catch (e) {
     status.textContent = "Lỗi: " + e;
   } finally {
     convertBtn.disabled = false;
     pickBtn.disabled = false;
   }
+});
+
+openBtn.addEventListener("click", async () => {
+  if (outputPath) await revealItemInDir(outputPath);
 });
