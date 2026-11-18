@@ -1,13 +1,15 @@
 use std::{
-    path::PathBuf,
+    collections::HashSet,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 
 use futures_util::StreamExt;
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
@@ -19,15 +21,18 @@ const GAME_PROCESS: &str = "VALORANT-Win64-Shipping.exe";
 // ---------- Cài đặt (lưu trong thư mục cấu hình của app) ----------
 
 #[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(default)]
 struct Settings {
     worker_url: String,
     api_token: String,
+    watch_dir: String,
 }
 
 #[derive(Serialize)]
 struct PublicSettings {
     worker_url: String,
     has_token: bool,
+    watch_dir: String,
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -44,12 +49,18 @@ fn load_settings(app: &tauri::AppHandle) -> Settings {
         .unwrap_or_default()
 }
 
+fn write_settings(app: &tauri::AppHandle, s: &Settings) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
+    std::fs::write(settings_path(app)?, json).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> PublicSettings {
     let s = load_settings(&app);
     PublicSettings {
         worker_url: s.worker_url,
         has_token: !s.api_token.is_empty(),
+        watch_dir: s.watch_dir,
     }
 }
 
@@ -64,8 +75,7 @@ fn save_settings(
     if !api_token.trim().is_empty() {
         s.api_token = api_token.trim().to_string();
     }
-    let json = serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?;
-    std::fs::write(settings_path(&app)?, json).map_err(|e| e.to_string())
+    write_settings(&app, &s)
 }
 
 // ---------- Windows: hạ ưu tiên FFmpeg, phát hiện game ----------
@@ -111,6 +121,155 @@ fn is_game_running() -> bool {
         }
     }
     false
+}
+
+// ---------- Theo dõi thư mục clip ----------
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ClipInfo {
+    path: String,
+    name: String,
+    size_bytes: u64,
+    modified_ms: u64,
+}
+
+#[derive(Default)]
+struct WatchState {
+    watcher: Mutex<Option<RecommendedWatcher>>,
+    pending: Arc<Mutex<HashSet<PathBuf>>>,
+}
+
+fn is_mkv(path: &Path) -> bool {
+    path.extension()
+        .map(|e| e.eq_ignore_ascii_case("mkv"))
+        .unwrap_or(false)
+}
+
+fn clip_info(path: &Path) -> Option<ClipInfo> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let modified_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    Some(ClipInfo {
+        path: path.to_string_lossy().to_string(),
+        name: path.file_name()?.to_string_lossy().to_string(),
+        size_bytes: meta.len(),
+        modified_ms,
+    })
+}
+
+// Đợi tới khi OBS ghi xong (kích thước không đổi 3 giây liên tiếp)
+async fn wait_until_stable(path: &Path) {
+    let mut last = 0u64;
+    let mut stable = 0;
+    for _ in 0..600 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let Ok(meta) = std::fs::metadata(path) else {
+            return; // file đã bị xóa hoặc đổi tên
+        };
+        let size = meta.len();
+        if size > 0 && size == last {
+            stable += 1;
+            if stable >= 3 {
+                return;
+            }
+        } else {
+            stable = 0;
+            last = size;
+        }
+    }
+}
+
+fn start_watch(app: &tauri::AppHandle, dir: &str, state: &WatchState) -> Result<(), String> {
+    let mut guard = state.watcher.lock().map_err(|e| e.to_string())?;
+    *guard = None; // dừng watcher cũ (nếu có)
+
+    if dir.is_empty() {
+        return Ok(());
+    }
+    let path = PathBuf::from(dir);
+    if !path.is_dir() {
+        return Err("Thư mục không tồn tại.".into());
+    }
+
+    let app_handle = app.clone();
+    let pending = state.pending.clone();
+
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
+        let Ok(event) = res else { return };
+        if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
+            return;
+        }
+
+        for p in event.paths {
+            if !is_mkv(&p) {
+                continue;
+            }
+            {
+                let mut set = pending.lock().unwrap();
+                if !set.insert(p.clone()) {
+                    continue; // đang chờ file này rồi
+                }
+            }
+
+            let app = app_handle.clone();
+            let pending = pending.clone();
+            tauri::async_runtime::spawn(async move {
+                wait_until_stable(&p).await;
+                if let Some(info) = clip_info(&p) {
+                    let _ = app.emit("clip-detected", info);
+                }
+                pending.lock().unwrap().remove(&p);
+            });
+        }
+    })
+    .map_err(|e| e.to_string())?;
+
+    watcher
+        .watch(&path, RecursiveMode::NonRecursive)
+        .map_err(|e| e.to_string())?;
+    *guard = Some(watcher);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_watch_dir(
+    app: tauri::AppHandle,
+    state: State<'_, WatchState>,
+    dir: String,
+) -> Result<(), String> {
+    start_watch(&app, &dir, &state)?;
+    let mut s = load_settings(&app);
+    s.watch_dir = dir;
+    write_settings(&app, &s)
+}
+
+#[tauri::command]
+fn list_clips(dir: String) -> Vec<ClipInfo> {
+    let mut clips: Vec<ClipInfo> = std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let p = entry.path();
+            if is_mkv(&p) {
+                clip_info(&p)
+            } else {
+                None
+            }
+        })
+        .collect();
+    clips.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+    clips
 }
 
 // ---------- FFmpeg ----------
@@ -325,15 +484,30 @@ async fn upload_video(
 pub fn run() {
     tauri::Builder::default()
         .manage(UploadState::default())
+        .manage(WatchState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .setup(|app| {
+            // Tự bật theo dõi thư mục đã lưu từ lần trước
+            let handle = app.handle().clone();
+            let settings = load_settings(&handle);
+            if !settings.watch_dir.is_empty() {
+                let state = app.state::<WatchState>();
+                if let Err(e) = start_watch(&handle, &settings.watch_dir, &state) {
+                    println!("Không bật được theo dõi thư mục: {e}");
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             probe_video,
             remux_video,
             is_game_running,
             get_settings,
             save_settings,
+            set_watch_dir,
+            list_clips,
             upload_video,
             cancel_upload
         ])
