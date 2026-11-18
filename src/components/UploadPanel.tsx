@@ -7,9 +7,10 @@ import ProgressBar from "./ProgressBar";
 type Props = {
   outputPath: string;
   onBusyChange: (busy: boolean) => void;
+  onUploaded: (url: string) => void;
 };
 
-export default function UploadPanel({ outputPath, onBusyChange }: Props) {
+export default function UploadPanel({ outputPath, onBusyChange, onUploaded }: Props) {
   const [limit, setLimit] = useState("2048");
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState<[number, number] | null>(null);
@@ -65,6 +66,7 @@ export default function UploadPanel({ outputPath, onBusyChange }: Props) {
         limitKbps: Number(limit),
       });
       setLink(url);
+      onUploaded(url);
       try {
         await navigator.clipboard.writeText(url);
         setMessage("Upload xong! Link đã được sao chép.");

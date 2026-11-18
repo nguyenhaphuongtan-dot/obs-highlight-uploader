@@ -271,7 +271,33 @@ fn list_clips(dir: String) -> Vec<ClipInfo> {
     clips.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
     clips
 }
+// ---------- Thư viện clip (trạng thái từng clip) ----------
 
+fn library_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("library.json"))
+}
+
+#[tauri::command]
+fn load_library(app: tauri::AppHandle) -> String {
+    library_path(&app)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_else(|| "{}".to_string())
+}
+
+#[tauri::command]
+fn save_library(app: tauri::AppHandle, json: String) -> Result<(), String> {
+    serde_json::from_str::<serde_json::Value>(&json)
+        .map_err(|e| format!("Dữ liệu không hợp lệ: {e}"))?;
+    std::fs::write(library_path(&app)?, json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn path_exists(path: String) -> bool {
+    Path::new(&path).is_file()
+}
 // ---------- FFmpeg ----------
 
 #[tauri::command]
@@ -479,7 +505,34 @@ async fn upload_video(
     let _ = app.emit("upload-progress", (total, total));
     Ok(ticket.view_url)
 }
+#[tauri::command]
+async fn delete_video(app: tauri::AppHandle, view_url: String) -> Result<(), String> {
+    let settings = load_settings(&app);
+    if settings.worker_url.is_empty() || settings.api_token.is_empty() {
+        return Err("Chưa cài đặt địa chỉ Worker hoặc mã bí mật.".into());
+    }
 
+    // view_url có dạng https://worker/v/ID, lấy phần ID cuối
+    let id = view_url.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("Link video không hợp lệ.".into());
+    }
+
+    let res = reqwest::Client::new()
+        .delete(format!("{}/api/videos/{}", settings.worker_url, id))
+        .bearer_auth(&settings.api_token)
+        .send()
+        .await
+        .map_err(|e| format!("Không kết nối được Worker: {}", e.without_url()))?;
+
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        let short: String = body.chars().take(200).collect();
+        return Err(format!("Xóa thất bại ({status}): {short}"));
+    }
+    Ok(())
+}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -508,8 +561,13 @@ pub fn run() {
             save_settings,
             set_watch_dir,
             list_clips,
+            load_library,
+            save_library,
+            path_exists,
             upload_video,
-            cancel_upload
+            cancel_upload,
+            delete_video
+         
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

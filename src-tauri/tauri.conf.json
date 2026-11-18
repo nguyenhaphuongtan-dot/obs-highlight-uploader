@@ -19,14 +19,18 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**/*.mkv", "**/*.mp4"]
+      }
     }
   },
   "bundle": {
-  "externalBin": [
-  "binaries/ffmpeg",
-  "binaries/ffprobe"
-],
+    "externalBin": [
+      "binaries/ffmpeg",
+      "binaries/ffprobe"
+    ],
     "active": true,
     "targets": "all",
     "icon": [

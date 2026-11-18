@@ -164,3 +164,34 @@ details button {
 .clip-name {
   word-break: break-all;
 }
+.preview {
+  width: 100%;
+  max-height: 300px;
+  background: #000;
+  border-radius: 8px;
+}
+
+.clip-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 0.8em;
+  background: #3a3a42;
+  color: var(--text);
+}
+
+.badge.blue {
+  background: #1d4f57;
+  color: var(--accent);
+}
+
+.badge.green {
+  background: #2c4a1d;
+  color: var(--green);
+}

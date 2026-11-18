@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { ClipRecord, Library } from "../library";
 
 type Clip = {
   path: string;
@@ -11,7 +12,9 @@ type Clip = {
 };
 
 type Props = {
+  library: Library;
   onSelect: (path: string) => void;
+  onDelete: (clipPath: string, viewUrl: string) => void;
   disabled: boolean;
 };
 
@@ -19,7 +22,13 @@ function sortClips(list: Clip[]): Clip[] {
   return [...list].sort((a, b) => b.modifiedMs - a.modifiedMs);
 }
 
-export default function ClipList({ onSelect, disabled }: Props) {
+function statusOf(rec?: ClipRecord) {
+  if (rec?.viewUrl) return { text: "Đã upload", cls: "badge green" };
+  if (rec?.mp4Path) return { text: "Đã chuyển MP4", cls: "badge blue" };
+  return { text: "Mới", cls: "badge" };
+}
+
+export default function ClipList({ library, onSelect, onDelete, disabled }: Props) {
   const [dir, setDir] = useState("");
   const [clips, setClips] = useState<Clip[]>([]);
   const [message, setMessage] = useState("");
@@ -41,7 +50,9 @@ export default function ClipList({ onSelect, disabled }: Props) {
 
   useEffect(() => {
     const unlisten = listen<Clip>("clip-detected", (e) => {
-      setClips((prev) => sortClips([...prev.filter((c) => c.path !== e.payload.path), e.payload]));
+      setClips((prev) =>
+        sortClips([...prev.filter((c) => c.path !== e.payload.path), e.payload])
+      );
       setMessage(`Phát hiện clip mới: ${e.payload.name}`);
     });
     return () => {
@@ -62,6 +73,15 @@ export default function ClipList({ onSelect, disabled }: Props) {
     }
   };
 
+  const copyLink = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setMessage("Đã sao chép link.");
+    } catch {
+      setMessage("Không sao chép tự động được. Link: " + url);
+    }
+  };
+
   return (
     <section className="card">
       <div className="row">
@@ -73,23 +93,40 @@ export default function ClipList({ onSelect, disabled }: Props) {
       {dir && <p className="note">Đang theo dõi: {dir}</p>}
       {message && <p className="note">{message}</p>}
 
-      {dir && clips.length === 0 && <p className="note">Chưa có clip .mkv nào trong thư mục.</p>}
+      {dir && clips.length === 0 && (
+        <p className="note">Chưa có clip .mkv nào trong thư mục.</p>
+      )}
 
       <ul className="clips">
-        {clips.map((c) => (
-          <li key={c.path}>
-            <div>
-              <div className="clip-name">{c.name}</div>
-              <div className="note">
-                {new Date(c.modifiedMs).toLocaleString("vi-VN")} ·{" "}
-                {(c.sizeBytes / 1024 / 1024).toFixed(1)} MB
+        {clips.map((c) => {
+          const rec = library[c.path];
+          const st = statusOf(rec);
+          return (
+            <li key={c.path}>
+              <div>
+                <div className="clip-name">{c.name}</div>
+                <div className="note">
+                  {new Date(c.modifiedMs).toLocaleString("vi-VN")} ·{" "}
+                  {(c.sizeBytes / 1024 / 1024).toFixed(1)} MB{" "}
+                  <span className={st.cls}>{st.text}</span>
+                </div>
               </div>
-            </div>
-            <button disabled={disabled} onClick={() => onSelect(c.path)}>
-              Dùng clip này
-            </button>
-          </li>
-        ))}
+              <div className="clip-actions">
+                {rec?.viewUrl && (
+                  <button onClick={() => copyLink(rec.viewUrl!)}>Sao chép link</button>
+                )}
+                 {rec?.viewUrl && (
+                  <button disabled={disabled} onClick={() => onDelete(c.path, rec.viewUrl!)}>
+                    Xóa khỏi cloud
+                  </button>
+                )}
+                <button disabled={disabled} onClick={() => onSelect(c.path)}>
+                  Dùng clip này
+                </button>
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

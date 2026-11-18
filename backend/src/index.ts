@@ -71,6 +71,21 @@ async function serveMedia(env: Env, id: string): Promise<Response> {
     headers: { Location: signed.url, "Cache-Control": "no-store" },
   });
 }
+async function deleteVideo(request: Request, env: Env, id: string): Promise<Response> {
+  if (request.headers.get("Authorization") !== `Bearer ${env.API_TOKEN}`) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  if (!ID_PATTERN.test(id)) return new Response("Bad id", { status: 400 });
+
+  const url = `https://${env.B2_ENDPOINT_HOST}/${env.BUCKET_NAME}/videos/${id}.mp4`;
+  const res = await makeClient(env).fetch(url, { method: "DELETE" });
+
+  // 404 nghĩa là file không còn nữa, vẫn coi là đã xóa
+  if (!res.ok && res.status !== 404) {
+    return new Response(`Backblaze trả về lỗi ${res.status}`, { status: 502 });
+  }
+  return Response.json({ deleted: true });
+}
 
 function viewerPage(id: string): Response {
   if (!ID_PATTERN.test(id)) return new Response("Not found", { status: 404 });
@@ -106,6 +121,9 @@ export default {
     }
     if (request.method === "GET" && pathname.startsWith("/v/")) {
       return viewerPage(pathname.slice("/v/".length));
+    }
+    if (request.method === "DELETE" && pathname.startsWith("/api/videos/")) {
+      return deleteVideo(request, env, pathname.slice("/api/videos/".length));
     }
     return new Response("Not found", { status: 404 });
   },

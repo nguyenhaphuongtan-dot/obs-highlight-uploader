@@ -1,13 +1,15 @@
-import { useEffect, useState } from "react";
-import { open, save, ask } from "@tauri-apps/plugin-dialog";
+import { useEffect, useRef, useState } from "react";
+import { open, save, ask, message as showMessage } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import ClipList from "./components/ClipList";
 import SettingsPanel from "./components/SettingsPanel";
+import ClipList from "./components/ClipList";
 import UploadPanel from "./components/UploadPanel";
+import VideoPreview from "./components/VideoPreview";
 import ProgressBar from "./components/ProgressBar";
-
+import { loadLibrary, saveLibrary } from "./library";
+import type { ClipRecord, Library } from "./library";
 
 type VideoInfo = {
   width: number;
@@ -44,10 +46,21 @@ export default function App() {
   const [convertMs, setConvertMs] = useState(0);
   const [showConvertBar, setShowConvertBar] = useState(false);
   const [outputPath, setOutputPath] = useState("");
+  const [previewPath, setPreviewPath] = useState("");
   const [message, setMessage] = useState("");
   const [uploadBusy, setUploadBusy] = useState(false);
 
+  const [library, setLibrary] = useState<Library>({});
+  const libraryRef = useRef<Library>({});
+
   const busy = converting || uploadBusy || probing;
+
+  useEffect(() => {
+    loadLibrary().then((lib) => {
+      libraryRef.current = lib;
+      setLibrary(lib);
+    });
+  }, []);
 
   useEffect(() => {
     const unlisten = listen<number>("remux-progress", (e) => setConvertMs(e.payload));
@@ -56,14 +69,33 @@ export default function App() {
     };
   }, []);
 
-    const loadPath = async (p: string) => {
+  const updateRecord = (mkvPath: string, patch: ClipRecord) => {
+    const next: Library = {
+      ...libraryRef.current,
+      [mkvPath]: { ...libraryRef.current[mkvPath], ...patch },
+    };
+    libraryRef.current = next;
+    setLibrary(next);
+    saveLibrary(next).catch(() => {});
+  };
+
+  const loadPath = async (p: string) => {
     setPath(p);
     setInfo(null);
-    setOutputPath("");
     setConvertMs(0);
     setShowConvertBar(false);
     setMessage("");
     setProbing(true);
+
+    // Nếu clip này đã chuyển MP4 trước đó và file còn tồn tại thì dùng lại
+    let existing = "";
+    const rec = libraryRef.current[p];
+    if (rec?.mp4Path && (await invoke<boolean>("path_exists", { path: rec.mp4Path }))) {
+      existing = rec.mp4Path;
+    }
+    setOutputPath(existing);
+    setPreviewPath(existing || p);
+    if (existing) setMessage("Clip này đã được chuyển MP4 trước đó: " + existing);
 
     try {
       const json = await invoke<string>("probe_video", { path: p });
@@ -120,6 +152,8 @@ export default function App() {
       });
       setConvertMs(info.durationMs);
       setOutputPath(chosen);
+      setPreviewPath(chosen);
+      updateRecord(path, { mp4Path: chosen });
       setMessage("Hoàn tất! File đã lưu tại: " + chosen);
     } catch (e) {
       setMessage("Lỗi: " + e);
@@ -127,17 +161,44 @@ export default function App() {
       setConverting(false);
     }
   };
+  const deleteRemote = async (clipPath: string, viewUrl: string) => {
+    try {
+      const ok = await ask(
+        "Xóa video này khỏi cloud? Link chia sẻ sẽ ngừng hoạt động. File trên máy bạn không bị xóa.",
+        { title: "Xóa khỏi cloud", kind: "warning", okLabel: "Xóa", cancelLabel: "Hủy" }
+      );
+      if (!ok) return;
 
-  const convertPercent = info && info.durationMs > 0 ? (convertMs / info.durationMs) * 100 : 0;
+      setMessage("Đang xóa trên cloud...");
+      await invoke("delete_video", { viewUrl });
+      updateRecord(clipPath, { viewUrl: undefined, uploadedAt: undefined });
+      setMessage("Đã xóa video khỏi cloud.");
+      await showMessage("Đã xóa video khỏi cloud. Link chia sẻ không còn hoạt động.", {
+        title: "Xóa khỏi cloud",
+        kind: "info",
+      });
+    } catch (e) {
+      console.error("delete_video lỗi:", e);
+      setMessage("Lỗi: " + e);
+      await showMessage("Xóa thất bại: " + e, { title: "Lỗi", kind: "error" });
+    }
+  };
+  const convertPercent =
+    info && info.durationMs > 0 ? (convertMs / info.durationMs) * 100 : 0;
+
+  const previewLabel = previewPath.toLowerCase().endsWith(".mp4")
+    ? "Xem trước bản MP4 đã chuyển"
+    : "Xem trước clip gốc (MKV)";
 
   return (
     <main className="container">
       <h1>OBS Highlight Uploader</h1>
 
       <SettingsPanel />
-      <ClipList onSelect={loadPath} disabled={busy} />
+
+      <ClipList library={library} onSelect={loadPath} onDelete={deleteRemote} disabled={busy} />
       <button onClick={pick} disabled={busy}>
-        Chọn file MKV
+        Chọn file MKV khác
       </button>
       <p className="path">{path || "Chưa chọn file"}</p>
 
@@ -154,6 +215,10 @@ export default function App() {
         </pre>
       )}
 
+      {previewPath && (
+        <VideoPreview key={previewPath} path={previewPath} label={previewLabel} />
+      )}
+
       <button onClick={convert} disabled={!info || busy}>
         Chuyển sang MP4
       </button>
@@ -164,7 +229,12 @@ export default function App() {
       {outputPath && (
         <>
           <button onClick={() => revealItemInDir(outputPath)}>Mở thư mục</button>
-          <UploadPanel key={outputPath} outputPath={outputPath} onBusyChange={setUploadBusy} />
+          <UploadPanel
+            key={outputPath}
+            outputPath={outputPath}
+            onBusyChange={setUploadBusy}
+            onUploaded={(url) => updateRecord(path, { viewUrl: url, uploadedAt: Date.now() })}
+          />
         </>
       )}
     </main>
