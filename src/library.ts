@@ -4,6 +4,8 @@ export type ClipRecord = {
   mp4Path?: string;
   viewUrl?: string;
   uploadedAt?: number;
+  convertedAt?: number;
+  mkvDeleted?: boolean;
 };
 
 // Khóa là đường dẫn file MKV gốc

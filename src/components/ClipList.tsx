@@ -11,15 +11,24 @@ type Clip = {
   modifiedMs: number;
 };
 
+type Item = {
+  key: string; // đường dẫn MKV gốc, dùng làm khóa trong thư viện
+  name: string;
+  sizeBytes?: number;
+  timeMs: number;
+  rec?: ClipRecord;
+};
+
 type Props = {
   library: Library;
+  refreshKey: number;
   onSelect: (path: string) => void;
   onDelete: (clipPath: string, viewUrl: string) => void;
   disabled: boolean;
 };
 
-function sortClips(list: Clip[]): Clip[] {
-  return [...list].sort((a, b) => b.modifiedMs - a.modifiedMs);
+function baseName(p: string) {
+  return p.split(/[\\/]/).pop() ?? p;
 }
 
 function statusOf(rec?: ClipRecord) {
@@ -28,7 +37,7 @@ function statusOf(rec?: ClipRecord) {
   return { text: "Mới", cls: "badge" };
 }
 
-export default function ClipList({ library, onSelect, onDelete, disabled }: Props) {
+export default function ClipList({ library, refreshKey, onSelect, onDelete, disabled }: Props) {
   const [dir, setDir] = useState("");
   const [clips, setClips] = useState<Clip[]>([]);
   const [message, setMessage] = useState("");
@@ -48,11 +57,14 @@ export default function ClipList({ library, onSelect, onDelete, disabled }: Prop
     });
   }, []);
 
+  // Làm mới khi App yêu cầu (ví dụ sau khi xóa MKV)
+  useEffect(() => {
+    if (dir) refresh(dir);
+  }, [refreshKey]);
+
   useEffect(() => {
     const unlisten = listen<Clip>("clip-detected", (e) => {
-      setClips((prev) =>
-        sortClips([...prev.filter((c) => c.path !== e.payload.path), e.payload])
-      );
+      setClips((prev) => [...prev.filter((c) => c.path !== e.payload.path), e.payload]);
       setMessage(`Phát hiện clip mới: ${e.payload.name}`);
     });
     return () => {
@@ -82,6 +94,26 @@ export default function ClipList({ library, onSelect, onDelete, disabled }: Prop
     }
   };
 
+  // Gộp: các file MKV trong thư mục + các clip đã có MP4 nhưng MKV không còn trong danh sách
+  const clipPaths = new Set(clips.map((c) => c.path));
+  const items: Item[] = [
+    ...clips.map((c) => ({
+      key: c.path,
+      name: c.name,
+      sizeBytes: c.sizeBytes,
+      timeMs: c.modifiedMs,
+      rec: library[c.path],
+    })),
+    ...Object.entries(library)
+      .filter(([key, rec]) => !clipPaths.has(key) && rec.mp4Path)
+      .map(([key, rec]) => ({
+        key,
+        name: baseName(rec.mp4Path!),
+        timeMs: rec.convertedAt ?? rec.uploadedAt ?? 0,
+        rec,
+      })),
+  ].sort((a, b) => b.timeMs - a.timeMs);
+
   return (
     <section className="card">
       <div className="row">
@@ -93,34 +125,32 @@ export default function ClipList({ library, onSelect, onDelete, disabled }: Prop
       {dir && <p className="note">Đang theo dõi: {dir}</p>}
       {message && <p className="note">{message}</p>}
 
-      {dir && clips.length === 0 && (
-        <p className="note">Chưa có clip .mkv nào trong thư mục.</p>
-      )}
+      {dir && items.length === 0 && <p className="note">Chưa có clip nào.</p>}
 
       <ul className="clips">
-        {clips.map((c) => {
-          const rec = library[c.path];
-          const st = statusOf(rec);
+        {items.map((c) => {
+          const st = statusOf(c.rec);
           return (
-            <li key={c.path}>
+            <li key={c.key}>
               <div>
                 <div className="clip-name">{c.name}</div>
                 <div className="note">
-                  {new Date(c.modifiedMs).toLocaleString("vi-VN")} ·{" "}
-                  {(c.sizeBytes / 1024 / 1024).toFixed(1)} MB{" "}
+                  {c.timeMs > 0 ? new Date(c.timeMs).toLocaleString("vi-VN") : "—"}
+                  {c.sizeBytes !== undefined && ` · ${(c.sizeBytes / 1024 / 1024).toFixed(1)} MB`}{" "}
                   <span className={st.cls}>{st.text}</span>
+                  {c.rec?.mkvDeleted && <span className="badge">MKV đã xóa</span>}
                 </div>
               </div>
               <div className="clip-actions">
-                {rec?.viewUrl && (
-                  <button onClick={() => copyLink(rec.viewUrl!)}>Sao chép link</button>
+                {c.rec?.viewUrl && (
+                  <>
+                    <button onClick={() => copyLink(c.rec!.viewUrl!)}>Sao chép link</button>
+                    <button disabled={disabled} onClick={() => onDelete(c.key, c.rec!.viewUrl!)}>
+                      Xóa khỏi cloud
+                    </button>
+                  </>
                 )}
-                 {rec?.viewUrl && (
-                  <button disabled={disabled} onClick={() => onDelete(c.path, rec.viewUrl!)}>
-                    Xóa khỏi cloud
-                  </button>
-                )}
-                <button disabled={disabled} onClick={() => onSelect(c.path)}>
+                <button disabled={disabled} onClick={() => onSelect(c.key)}>
                   Dùng clip này
                 </button>
               </div>

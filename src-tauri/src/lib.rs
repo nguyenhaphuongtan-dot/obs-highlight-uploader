@@ -26,6 +26,7 @@ struct Settings {
     worker_url: String,
     api_token: String,
     watch_dir: String,
+    auto_delete_mkv: bool,
 }
 
 #[derive(Serialize)]
@@ -33,6 +34,7 @@ struct PublicSettings {
     worker_url: String,
     has_token: bool,
     watch_dir: String,
+    auto_delete_mkv: bool,
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -61,6 +63,7 @@ fn get_settings(app: tauri::AppHandle) -> PublicSettings {
         worker_url: s.worker_url,
         has_token: !s.api_token.is_empty(),
         watch_dir: s.watch_dir,
+        auto_delete_mkv: s.auto_delete_mkv,
     }
 }
 
@@ -413,7 +416,72 @@ async fn remux_video(
     }
     Ok(())
 }
+// ---------- Tự động xóa MKV sau khi chuyển ----------
 
+#[tauri::command]
+fn set_auto_delete_mkv(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let mut s = load_settings(&app);
+    s.auto_delete_mkv = enabled;
+    write_settings(&app, &s)
+}
+
+// Chỉ chuyển MKV vào Thùng rác khi MP4 đã được kiểm tra hợp lệ
+#[tauri::command]
+async fn trash_source_after_verify(
+    app: tauri::AppHandle,
+    source: String,
+    mp4: String,
+    expected_ms: u64,
+) -> Result<(), String> {
+    let source_path = Path::new(&source);
+    let mp4_path = Path::new(&mp4);
+
+    if !is_mkv(source_path) {
+        return Err("File nguồn không phải .mkv nên không xóa.".into());
+    }
+    if !source_path.is_file() {
+        return Err("Không tìm thấy file MKV nguồn.".into());
+    }
+    if source.to_lowercase() == mp4.to_lowercase() {
+        return Err("File MP4 trùng với file nguồn.".into());
+    }
+
+    let meta = std::fs::metadata(mp4_path)
+        .map_err(|_| "Không tìm thấy file MP4 vừa tạo.".to_string())?;
+    if meta.len() == 0 {
+        return Err("File MP4 bị rỗng.".into());
+    }
+
+    // Đọc lại file MP4 bằng ffprobe để chắc chắn nó hợp lệ
+    let json = probe_video(app.clone(), mp4.clone())
+        .await
+        .map_err(|e| format!("Không đọc được file MP4 để kiểm tra: {e}"))?;
+    let v: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+
+    let has_video = v["streams"]
+        .as_array()
+        .map(|s| s.iter().any(|x| x["codec_type"] == "video"))
+        .unwrap_or(false);
+    if !has_video {
+        return Err("File MP4 không có hình.".into());
+    }
+
+    let duration_ms = v["format"]["duration"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|d| (d * 1000.0) as u64)
+        .unwrap_or(0);
+    let tolerance = (expected_ms / 50).max(1000);
+    if duration_ms + tolerance < expected_ms {
+        return Err(format!(
+            "File MP4 ngắn hơn bản gốc ({:.1} giây so với {:.1} giây).",
+            duration_ms as f64 / 1000.0,
+            expected_ms as f64 / 1000.0
+        ));
+    }
+
+    trash::delete(source_path).map_err(|e| format!("Không chuyển được vào Thùng rác: {e}"))
+}
 // ---------- Upload lên Cloud ----------
 
 #[derive(Default)]
@@ -709,7 +777,9 @@ pub fn run() {
             path_exists,
             upload_video,
             cancel_upload,
-            delete_video
+            delete_video,
+            set_auto_delete_mkv,
+            trash_source_after_verify
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

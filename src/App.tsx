@@ -42,6 +42,7 @@ function parseInfo(json: string): VideoInfo {
 
 export default function App() {
   const [path, setPath] = useState("");
+  const [sourceExists, setSourceExists] = useState(true);
   const [info, setInfo] = useState<VideoInfo | null>(null);
   const [probing, setProbing] = useState(false);
   const [converting, setConverting] = useState(false);
@@ -54,6 +55,8 @@ export default function App() {
   const [cutVersion, setCutVersion] = useState(0);
   const [range, setRange] = useState<TrimRange>({ startMs: 0, endMs: 0 });
   const [precise, setPrecise] = useState(false);
+  const [autoDelete, setAutoDelete] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [message, setMessage] = useState("");
   const [uploadBusy, setUploadBusy] = useState(false);
 
@@ -68,6 +71,9 @@ export default function App() {
       libraryRef.current = lib;
       setLibrary(lib);
     });
+    invoke<{ auto_delete_mkv: boolean }>("get_settings").then((s) =>
+      setAutoDelete(s.auto_delete_mkv)
+    );
   }, []);
 
   useEffect(() => {
@@ -87,26 +93,52 @@ export default function App() {
     saveLibrary(next).catch(() => {});
   };
 
+  const toggleAutoDelete = async (enabled: boolean) => {
+    if (enabled) {
+      const ok = await ask(
+        "Sau khi chuyển sang MP4 thành công và kiểm tra file MP4 đọc được, " +
+          "app sẽ chuyển file MKV gốc vào Thùng rác.\n\n" +
+          "Nếu MP4 có vấn đề, MKV được giữ nguyên. Thùng rác vẫn chiếm dung lượng " +
+          "cho tới khi bạn dọn.",
+        { title: "Bật tự động xóa MKV?", kind: "warning", okLabel: "Bật", cancelLabel: "Hủy" }
+      );
+      if (!ok) return;
+    }
+    try {
+      await invoke("set_auto_delete_mkv", { enabled });
+      setAutoDelete(enabled);
+    } catch (e) {
+      setMessage("Lỗi: " + e);
+    }
+  };
+
   const loadPath = async (p: string) => {
+    const rec = libraryRef.current[p];
+    const mkvExists = await invoke<boolean>("path_exists", { path: p });
+
+    // Nếu clip này đã chuyển MP4 trước đó và file còn tồn tại thì dùng lại
+    let existing = "";
+    if (rec?.mp4Path && (await invoke<boolean>("path_exists", { path: rec.mp4Path }))) {
+      existing = rec.mp4Path;
+    }
+
+    if (!mkvExists && !existing) {
+      setMessage("Không tìm thấy file MKV lẫn MP4 của clip này (có thể đã bị xóa hoặc di chuyển).");
+      return;
+    }
+
     setPath(p);
+    setSourceExists(mkvExists);
     setInfo(null);
     setCutPath("");
     setProgressMs(0);
     setShowBar(false);
-    setMessage("");
+    setOutputPath(existing);
+    setMessage(existing ? "Clip này đã được chuyển MP4 trước đó: " + existing : "");
     setProbing(true);
 
-    // Nếu clip này đã chuyển MP4 trước đó và file còn tồn tại thì dùng lại
-    let existing = "";
-    const rec = libraryRef.current[p];
-    if (rec?.mp4Path && (await invoke<boolean>("path_exists", { path: rec.mp4Path }))) {
-      existing = rec.mp4Path;
-    }
-    setOutputPath(existing);
-    if (existing) setMessage("Clip này đã được chuyển MP4 trước đó: " + existing);
-
     try {
-      const json = await invoke<string>("probe_video", { path: p });
+      const json = await invoke<string>("probe_video", { path: mkvExists ? p : existing });
       const parsed = parseInfo(json);
       setInfo(parsed);
       setRange({ startMs: 0, endMs: parsed.durationMs });
@@ -132,7 +164,7 @@ export default function App() {
   };
 
   const convert = async () => {
-    if (!info) return;
+    if (!info || !sourceExists) return;
 
     const proceed = await confirmIfGameRunning(
       "Valorant đang chạy. Chuyển video lúc này có thể làm giảm FPS. Bạn vẫn muốn tiếp tục?",
@@ -171,8 +203,26 @@ export default function App() {
       setProgressMs(info.durationMs);
       setOutputPath(chosen);
       setRange({ startMs: 0, endMs: info.durationMs });
-      updateRecord(path, { mp4Path: chosen });
-      setMessage("Hoàn tất! File đã lưu tại: " + chosen);
+      updateRecord(path, { mp4Path: chosen, convertedAt: Date.now() });
+
+      let note = "Hoàn tất! File đã lưu tại: " + chosen + ".";
+
+      if (autoDelete) {
+        try {
+          await invoke("trash_source_after_verify", {
+            source: path,
+            mp4: chosen,
+            expectedMs: Math.round(info.durationMs),
+          });
+          updateRecord(path, { mkvDeleted: true });
+          setSourceExists(false);
+          setRefreshKey((k) => k + 1);
+          note += " Đã chuyển file MKV gốc vào Thùng rác.";
+        } catch (e) {
+          note += " Không xóa MKV gốc (MKV được giữ nguyên): " + e;
+        }
+      }
+      setMessage(note);
     } catch (e) {
       setMessage("Lỗi: " + e);
     } finally {
@@ -235,6 +285,22 @@ export default function App() {
     }
   };
 
+  const deleteRemote = async (clipPath: string, viewUrl: string) => {
+    const ok = await ask(
+      "Xóa video này khỏi cloud? Link chia sẻ sẽ ngừng hoạt động. File trên máy bạn không bị xóa.",
+      { title: "Xóa khỏi cloud", kind: "warning", okLabel: "Xóa", cancelLabel: "Hủy" }
+    );
+    if (!ok) return;
+    setMessage("Đang xóa trên cloud...");
+    try {
+      await invoke("delete_video", { viewUrl });
+      updateRecord(clipPath, { viewUrl: undefined, uploadedAt: undefined });
+      setMessage("Đã xóa video khỏi cloud.");
+    } catch (e) {
+      setMessage("Lỗi: " + e);
+    }
+  };
+
   const percent = progressTotalMs > 0 ? (progressMs / progressTotalMs) * 100 : 0;
 
   return (
@@ -245,29 +311,19 @@ export default function App() {
 
       <ClipList
         library={library}
+        refreshKey={refreshKey}
         onSelect={loadPath}
-        onDelete={async (clipPath, viewUrl) => {
-          const ok = await ask(
-            "Xóa video này khỏi cloud? Link chia sẻ sẽ ngừng hoạt động. File trên máy bạn không bị xóa.",
-            { title: "Xóa khỏi cloud", kind: "warning", okLabel: "Xóa", cancelLabel: "Hủy" }
-          );
-          if (!ok) return;
-          setMessage("Đang xóa trên cloud...");
-          try {
-            await invoke("delete_video", { viewUrl });
-            updateRecord(clipPath, { viewUrl: undefined, uploadedAt: undefined });
-            setMessage("Đã xóa video khỏi cloud.");
-          } catch (e) {
-            setMessage("Lỗi: " + e);
-          }
-        }}
+        onDelete={deleteRemote}
         disabled={busy}
       />
 
       <button onClick={pick} disabled={busy}>
         Chọn file MKV khác
       </button>
-      <p className="path">{path || "Chưa chọn file"}</p>
+      <p className="path">
+        {path || "Chưa chọn file"}
+        {path && !sourceExists && " (file MKV gốc không còn, đang dùng bản MP4)"}
+      </p>
 
       {probing && <p className="note">Đang đọc thông tin...</p>}
 
@@ -282,13 +338,23 @@ export default function App() {
         </pre>
       )}
 
-      {path && !outputPath && (
+      {path && sourceExists && !outputPath && (
         <VideoPreview key={path} path={path} label="Xem trước clip gốc (MKV)" />
       )}
 
-      <button onClick={convert} disabled={!info || busy}>
+      <button onClick={convert} disabled={!info || busy || !sourceExists}>
         {outputPath ? "Chuyển lại sang MP4" : "Chuyển sang MP4"}
       </button>
+
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={autoDelete}
+          disabled={busy}
+          onChange={(e) => toggleAutoDelete(e.target.checked)}
+        />
+        Tự động chuyển MKV vào Thùng rác sau khi chuyển MP4 thành công
+      </label>
 
       {outputPath && info && (
         <>
