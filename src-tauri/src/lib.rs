@@ -331,25 +331,49 @@ async fn remux_video(
     input: String,
     output: String,
     copy_audio: bool,
+    start_ms: u64,
+    duration_ms: u64, // 0 = lấy tới hết file
+    precise: bool,
 ) -> Result<(), String> {
     let audio_codec = if copy_audio { "copy" } else { "aac" };
+
+    let mut args: Vec<String> = vec!["-y".into()];
+    if start_ms > 0 {
+        args.push("-ss".into());
+        args.push(format!("{:.3}", start_ms as f64 / 1000.0));
+    }
+    args.push("-i".into());
+    args.push(input);
+    if duration_ms > 0 {
+        args.push("-t".into());
+        args.push(format!("{:.3}", duration_ms as f64 / 1000.0));
+    }
+    for a in ["-map", "0:v:0", "-map", "0:a?"] {
+        args.push(a.into());
+    }
+    if precise {
+        for a in [
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        ] {
+            args.push(a.into());
+        }
+    } else {
+        for a in ["-c:v", "copy", "-avoid_negative_ts", "make_zero"] {
+            args.push(a.into());
+        }
+    }
+    args.push("-c:a".into());
+    args.push(audio_codec.into());
+    for a in ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats"] {
+        args.push(a.into());
+    }
+    args.push(output);
 
     let (mut rx, child) = app
         .shell()
         .sidecar("ffmpeg")
         .map_err(|e| e.to_string())?
-        .args([
-            "-y",
-            "-i", input.as_str(),
-            "-map", "0:v:0",
-            "-map", "0:a?",
-            "-c:v", "copy",
-            "-c:a", audio_codec,
-            "-movflags", "+faststart",
-            "-progress", "pipe:1",
-            "-nostats",
-            output.as_str(),
-        ])
+        .args(args)
         .spawn()
         .map_err(|e| e.to_string())?;
 

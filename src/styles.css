@@ -195,3 +195,13 @@ details button {
   background: #2c4a1d;
   color: var(--green);
 }
+input[type="range"] {
+  padding: 0;
+  height: 24px;
+  background: transparent;
+  accent-color: var(--accent);
+}
+
+.row button {
+  flex: 1;
+}
