@@ -1,11 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export type Segment = {
+  id: string;
+  no: number; // số thứ tự cố định, dùng để đặt tên file
+  label: string;
+  startMs: number;
+  endMs: number;
+  cutPath?: string;
+  viewUrl?: string;
+  uploadedAt?: number;
+};
+
 export type ClipRecord = {
   mp4Path?: string;
   viewUrl?: string;
   uploadedAt?: number;
   convertedAt?: number;
   mkvDeleted?: boolean;
+  segments?: Segment[];
+  nextSegmentNo?: number;
 };
 
 // Khóa là đường dẫn file MKV gốc

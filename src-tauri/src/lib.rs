@@ -7,7 +7,8 @@ use std::{
     },
     time::{Duration, Instant, UNIX_EPOCH},
 };
-
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use std::hash::{Hash, Hasher};
 use futures_util::StreamExt;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -416,6 +417,64 @@ async fn remux_video(
     }
     Ok(())
 }
+// ---------- Ảnh thu nhỏ ----------
+
+fn has_file(p: &Path) -> bool {
+    std::fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false)
+}
+
+#[tauri::command]
+async fn make_thumbnail(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let meta = std::fs::metadata(&path).map_err(|_| "Không tìm thấy file video.".to_string())?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (path.as_str(), meta.len(), mtime).hash(&mut hasher);
+    let file_name = format!("{:016x}.jpg", hasher.finish());
+
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("thumbs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let out = dir.join(file_name);
+    let out_str = out.to_string_lossy().to_string();
+
+    if !has_file(&out) {
+        // Thử lấy khung hình ở giây thứ 1, nếu video quá ngắn thì lấy khung đầu
+        for seek in ["1", "0"] {
+            let _ = app
+                .shell()
+                .sidecar("ffmpeg")
+                .map_err(|e| e.to_string())?
+                .args([
+                    "-y", "-ss", seek,
+                    "-i", path.as_str(),
+                    "-frames:v", "1",
+                    "-vf", "scale=320:-2",
+                    "-q:v", "5",
+                    out_str.as_str(),
+                ])
+                .output()
+                .await;
+            if has_file(&out) {
+                break;
+            }
+        }
+    }
+
+    let bytes = std::fs::read(&out).map_err(|_| "Không tạo được ảnh thu nhỏ.".to_string())?;
+    if bytes.is_empty() {
+        return Err("Không tạo được ảnh thu nhỏ.".into());
+    }
+    Ok(format!("data:image/jpeg;base64,{}", STANDARD.encode(bytes)))
+}
 // ---------- Tự động xóa MKV sau khi chuyển ----------
 
 #[tauri::command]
@@ -779,7 +838,8 @@ pub fn run() {
             cancel_upload,
             delete_video,
             set_auto_delete_mkv,
-            trash_source_after_verify
+            trash_source_after_verify,
+            make_thumbnail
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

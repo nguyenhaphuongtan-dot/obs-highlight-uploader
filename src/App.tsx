@@ -7,11 +7,10 @@ import SettingsPanel from "./components/SettingsPanel";
 import ClipList from "./components/ClipList";
 import UploadPanel from "./components/UploadPanel";
 import VideoPreview from "./components/VideoPreview";
-import TrimEditor from "./components/TrimEditor";
-import type { TrimRange } from "./components/TrimEditor";
+import SegmentEditor from "./components/SegmentEditor";
 import ProgressBar from "./components/ProgressBar";
 import { loadLibrary, saveLibrary } from "./library";
-import type { ClipRecord, Library } from "./library";
+import type { ClipRecord, Library, Segment } from "./library";
 
 type VideoInfo = {
   width: number;
@@ -51,9 +50,8 @@ export default function App() {
   const [progressTotalMs, setProgressTotalMs] = useState(0);
   const [showBar, setShowBar] = useState(false);
   const [outputPath, setOutputPath] = useState("");
-  const [cutPath, setCutPath] = useState("");
-  const [cutVersion, setCutVersion] = useState(0);
-  const [range, setRange] = useState<TrimRange>({ startMs: 0, endMs: 0 });
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [exportVersion, setExportVersion] = useState(0);
   const [precise, setPrecise] = useState(false);
   const [autoDelete, setAutoDelete] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -64,7 +62,9 @@ export default function App() {
   const libraryRef = useRef<Library>({});
 
   const busy = converting || exporting || uploadBusy || probing;
-  const uploadPath = cutPath || outputPath;
+  const segments: Segment[] = library[path]?.segments ?? [];
+  const selected = segments.find((s) => s.id === selectedId) ?? null;
+  const uploadPath = selected ? selected.cutPath ?? "" : outputPath;
 
   useEffect(() => {
     loadLibrary().then((lib) => {
@@ -83,6 +83,8 @@ export default function App() {
     };
   }, []);
 
+  // ---------- Thư viện ----------
+
   const updateRecord = (mkvPath: string, patch: ClipRecord) => {
     const next: Library = {
       ...libraryRef.current,
@@ -92,6 +94,38 @@ export default function App() {
     setLibrary(next);
     saveLibrary(next).catch(() => {});
   };
+
+  const patchSegment = (mkvPath: string, id: string, patch: Partial<Segment>) => {
+    const rec = libraryRef.current[mkvPath];
+    const timeChanged = patch.startMs !== undefined || patch.endMs !== undefined;
+    const list = (rec?.segments ?? []).map((s) =>
+      s.id === id ? { ...s, ...patch, ...(timeChanged ? { cutPath: undefined } : {}) } : s
+    );
+    updateRecord(mkvPath, { segments: list });
+  };
+
+  const addSegment = (startMs: number, endMs: number) => {
+    const rec = libraryRef.current[path];
+    const maxNo = Math.max(0, ...(rec?.segments ?? []).map((s) => s.no));
+    const no = rec?.nextSegmentNo ?? maxNo + 1;
+    const seg: Segment = {
+      id: `${Date.now().toString(36)}${no}`,
+      no,
+      label: `Đoạn ${no}`,
+      startMs,
+      endMs,
+    };
+    updateRecord(path, { segments: [...(rec?.segments ?? []), seg], nextSegmentNo: no + 1 });
+    setSelectedId(seg.id);
+  };
+
+  const removeSegment = (id: string) => {
+    const rec = libraryRef.current[path];
+    updateRecord(path, { segments: (rec?.segments ?? []).filter((s) => s.id !== id) });
+    if (selectedId === id) setSelectedId(null);
+  };
+
+  // ---------- Cài đặt ----------
 
   const toggleAutoDelete = async (enabled: boolean) => {
     if (enabled) {
@@ -112,11 +146,12 @@ export default function App() {
     }
   };
 
+  // ---------- Chọn clip ----------
+
   const loadPath = async (p: string) => {
     const rec = libraryRef.current[p];
     const mkvExists = await invoke<boolean>("path_exists", { path: p });
 
-    // Nếu clip này đã chuyển MP4 trước đó và file còn tồn tại thì dùng lại
     let existing = "";
     if (rec?.mp4Path && (await invoke<boolean>("path_exists", { path: rec.mp4Path }))) {
       existing = rec.mp4Path;
@@ -130,7 +165,7 @@ export default function App() {
     setPath(p);
     setSourceExists(mkvExists);
     setInfo(null);
-    setCutPath("");
+    setSelectedId(null);
     setProgressMs(0);
     setShowBar(false);
     setOutputPath(existing);
@@ -139,9 +174,7 @@ export default function App() {
 
     try {
       const json = await invoke<string>("probe_video", { path: mkvExists ? p : existing });
-      const parsed = parseInfo(json);
-      setInfo(parsed);
-      setRange({ startMs: 0, endMs: parsed.durationMs });
+      setInfo(parseInfo(json));
     } catch (e) {
       setMessage("Lỗi: " + e);
     } finally {
@@ -162,6 +195,8 @@ export default function App() {
     if (!gameRunning) return true;
     return await ask(text, { title: "Cảnh báo", kind: "warning", okLabel, cancelLabel: "Để sau" });
   };
+
+  // ---------- Chuyển MP4 ----------
 
   const convert = async () => {
     if (!info || !sourceExists) return;
@@ -184,7 +219,7 @@ export default function App() {
     }
 
     setOutputPath("");
-    setCutPath("");
+    setSelectedId(null);
     setProgressMs(0);
     setProgressTotalMs(info.durationMs);
     setShowBar(true);
@@ -202,7 +237,6 @@ export default function App() {
       });
       setProgressMs(info.durationMs);
       setOutputPath(chosen);
-      setRange({ startMs: 0, endMs: info.durationMs });
       updateRecord(path, { mp4Path: chosen, convertedAt: Date.now() });
 
       let note = "Hoàn tất! File đã lưu tại: " + chosen + ".";
@@ -230,15 +264,12 @@ export default function App() {
     }
   };
 
-  const exportCut = async () => {
-    if (!info || !outputPath) return;
+  // ---------- Xuất các đoạn ----------
 
-    const clipMs = range.endMs - range.startMs;
-    const isFull = range.startMs <= 0 && range.endMs >= info.durationMs - 50;
-    if (isFull) {
-      setMessage("Bạn chưa chọn đoạn cắt nào (đang chọn cả clip). Hãy kéo điểm đầu hoặc điểm cuối.");
-      return;
-    }
+  const cutFile = (seg: Segment) => outputPath.replace(/\.mp4$/i, `_${seg.no}.mp4`);
+
+  const exportSegments = async (list: Segment[]) => {
+    if (!info || !outputPath || list.length === 0) return;
 
     if (precise) {
       const proceed = await confirmIfGameRunning(
@@ -248,36 +279,31 @@ export default function App() {
       if (!proceed) return;
     }
 
-    const chosen = await save({
-      defaultPath: outputPath.replace(/\.mp4$/i, "_cut.mp4"),
-      filters: [{ name: "MP4", extensions: ["mp4"] }],
-    });
-    if (!chosen) return;
-
-    if (chosen.toLowerCase() === outputPath.toLowerCase()) {
-      setMessage("Lỗi: file đã cắt không được trùng file MP4 gốc.");
-      return;
-    }
-
-    setProgressMs(0);
-    setProgressTotalMs(clipMs);
     setShowBar(true);
     setExporting(true);
-    setMessage("Đang cắt...");
 
     try {
-      await invoke("remux_video", {
-        input: outputPath,
-        output: chosen,
-        copyAudio: true,
-        startMs: Math.round(range.startMs),
-        durationMs: Math.round(clipMs),
-        precise,
-      });
-      setProgressMs(clipMs);
-      setCutPath(chosen);
-      setCutVersion((v) => v + 1);
-      setMessage("Đã cắt xong! File: " + chosen);
+      for (let i = 0; i < list.length; i++) {
+        const seg = list[i];
+        const clipMs = seg.endMs - seg.startMs;
+        const out = cutFile(seg);
+
+        setProgressMs(0);
+        setProgressTotalMs(clipMs);
+        setMessage(`Đang cắt "${seg.label}" (${i + 1}/${list.length})...`);
+
+        await invoke("remux_video", {
+          input: outputPath,
+          output: out,
+          copyAudio: true,
+          startMs: Math.round(seg.startMs),
+          durationMs: Math.round(clipMs),
+          precise,
+        });
+        patchSegment(path, seg.id, { cutPath: out });
+      }
+      setExportVersion((v) => v + 1);
+      setMessage(`Đã cắt xong ${list.length} đoạn.`);
     } catch (e) {
       setMessage("Lỗi: " + e);
     } finally {
@@ -285,7 +311,9 @@ export default function App() {
     }
   };
 
-  const deleteRemote = async (clipPath: string, viewUrl: string) => {
+  // ---------- Xóa trên cloud ----------
+
+  const deleteRemote = async (clipPath: string, viewUrl: string, segmentId?: string) => {
     const ok = await ask(
       "Xóa video này khỏi cloud? Link chia sẻ sẽ ngừng hoạt động. File trên máy bạn không bị xóa.",
       { title: "Xóa khỏi cloud", kind: "warning", okLabel: "Xóa", cancelLabel: "Hủy" }
@@ -294,7 +322,11 @@ export default function App() {
     setMessage("Đang xóa trên cloud...");
     try {
       await invoke("delete_video", { viewUrl });
-      updateRecord(clipPath, { viewUrl: undefined, uploadedAt: undefined });
+      if (segmentId) {
+        patchSegment(clipPath, segmentId, { viewUrl: undefined, uploadedAt: undefined });
+      } else {
+        updateRecord(clipPath, { viewUrl: undefined, uploadedAt: undefined });
+      }
       setMessage("Đã xóa video khỏi cloud.");
     } catch (e) {
       setMessage("Lỗi: " + e);
@@ -358,12 +390,16 @@ export default function App() {
 
       {outputPath && info && (
         <>
-          <TrimEditor
+          <SegmentEditor
             key={outputPath}
             path={outputPath}
             durationMs={info.durationMs}
-            range={range}
-            onChange={setRange}
+            segments={segments}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onAdd={addSegment}
+            onUpdate={(id, patch) => patchSegment(path, id, patch)}
+            onRemove={removeSegment}
           />
 
           <section className="card">
@@ -377,9 +413,20 @@ export default function App() {
               <option value="fast">Nhanh (không encode lại, điểm đầu có thể lệch vài giây)</option>
               <option value="precise">Chính xác (encode lại, chậm hơn, tốn CPU)</option>
             </select>
-            <button onClick={exportCut} disabled={busy}>
-              Xuất đoạn đã chọn
-            </button>
+            <div className="row">
+              <button
+                disabled={busy || !selected}
+                onClick={() => selected && exportSegments([selected])}
+              >
+                Xuất đoạn đã chọn
+              </button>
+              <button
+                disabled={busy || segments.length === 0}
+                onClick={() => exportSegments(segments)}
+              >
+                Xuất tất cả ({segments.length} đoạn)
+              </button>
+            </div>
           </section>
         </>
       )}
@@ -387,28 +434,36 @@ export default function App() {
       {showBar && <ProgressBar percent={percent} />}
       {message && <p className="note">{message}</p>}
 
-      {cutPath && (
-        <>
-          <VideoPreview
-            key={cutPath + cutVersion}
-            path={cutPath}
-            label="Xem lại đoạn đã cắt (bản này sẽ được upload)"
-          />
-          <button onClick={() => setCutPath("")} disabled={busy}>
-            Bỏ bản cắt (upload bản đầy đủ)
-          </button>
-        </>
+      {selected?.cutPath && (
+        <VideoPreview
+          key={selected.cutPath + exportVersion}
+          path={selected.cutPath}
+          label={`Xem lại "${selected.label}" (bản này sẽ được upload)`}
+        />
       )}
 
-      {outputPath && (
+      {selected && !selected.cutPath && (
+        <p className="note">
+          Đoạn "{selected.label}" chưa được xuất. Bấm "Xuất đoạn đã chọn" trước khi upload,
+          hoặc bỏ chọn đoạn để upload cả clip.
+        </p>
+      )}
+
+      {uploadPath && (
         <>
           <button onClick={() => revealItemInDir(uploadPath)}>Mở thư mục</button>
           <p className="note">File sẽ upload: {uploadPath}</p>
           <UploadPanel
-            key={uploadPath}
+            key={uploadPath + ":" + exportVersion}
             outputPath={uploadPath}
             onBusyChange={setUploadBusy}
-            onUploaded={(url) => updateRecord(path, { viewUrl: url, uploadedAt: Date.now() })}
+            onUploaded={(url) => {
+              if (selected) {
+                patchSegment(path, selected.id, { viewUrl: url, uploadedAt: Date.now() });
+              } else {
+                updateRecord(path, { viewUrl: url, uploadedAt: Date.now() });
+              }
+            }}
           />
         </>
       )}

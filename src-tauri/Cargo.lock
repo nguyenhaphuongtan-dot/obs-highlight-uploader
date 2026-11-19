@@ -2685,6 +2685,7 @@ dependencies = [
 name = "obs-highlight-uploader"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "futures-util",
  "notify",
  "reqwest 0.12.28",

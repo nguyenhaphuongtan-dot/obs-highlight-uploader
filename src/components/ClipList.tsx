@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -16,6 +16,7 @@ type Item = {
   name: string;
   sizeBytes?: number;
   timeMs: number;
+  thumbSource: string;
   rec?: ClipRecord;
 };
 
@@ -23,7 +24,7 @@ type Props = {
   library: Library;
   refreshKey: number;
   onSelect: (path: string) => void;
-  onDelete: (clipPath: string, viewUrl: string) => void;
+  onDelete: (clipPath: string, viewUrl: string, segmentId?: string) => void;
   disabled: boolean;
 };
 
@@ -32,7 +33,8 @@ function baseName(p: string) {
 }
 
 function statusOf(rec?: ClipRecord) {
-  if (rec?.viewUrl) return { text: "Đã upload", cls: "badge green" };
+  const uploaded = rec?.viewUrl || rec?.segments?.some((s) => s.viewUrl);
+  if (uploaded) return { text: "Đã upload", cls: "badge green" };
   if (rec?.mp4Path) return { text: "Đã chuyển MP4", cls: "badge blue" };
   return { text: "Mới", cls: "badge" };
 }
@@ -41,6 +43,9 @@ export default function ClipList({ library, refreshKey, onSelect, onDelete, disa
   const [dir, setDir] = useState("");
   const [clips, setClips] = useState<Clip[]>([]);
   const [message, setMessage] = useState("");
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const thumbsRef = useRef<Record<string, string>>({});
+  const failedRef = useRef<Set<string>>(new Set());
 
   const refresh = async (folder: string) => {
     if (!folder) {
@@ -57,7 +62,6 @@ export default function ClipList({ library, refreshKey, onSelect, onDelete, disa
     });
   }, []);
 
-  // Làm mới khi App yêu cầu (ví dụ sau khi xóa MKV)
   useEffect(() => {
     if (dir) refresh(dir);
   }, [refreshKey]);
@@ -102,6 +106,7 @@ export default function ClipList({ library, refreshKey, onSelect, onDelete, disa
       name: c.name,
       sizeBytes: c.sizeBytes,
       timeMs: c.modifiedMs,
+      thumbSource: c.path,
       rec: library[c.path],
     })),
     ...Object.entries(library)
@@ -110,9 +115,37 @@ export default function ClipList({ library, refreshKey, onSelect, onDelete, disa
         key,
         name: baseName(rec.mp4Path!),
         timeMs: rec.convertedAt ?? rec.uploadedAt ?? 0,
+        thumbSource: rec.mp4Path!,
         rec,
       })),
   ].sort((a, b) => b.timeMs - a.timeMs);
+
+  // Tạo ảnh thu nhỏ lần lượt từng cái, bỏ qua khi đang chơi game
+  useEffect(() => {
+    let cancelled = false;
+    const needed = items
+      .filter((it) => !thumbsRef.current[it.key] && !failedRef.current.has(it.key))
+      .slice(0, 30);
+    if (needed.length === 0) return;
+
+    (async () => {
+      if (await invoke<boolean>("is_game_running")) return;
+      for (const it of needed) {
+        if (cancelled) return;
+        try {
+          const url = await invoke<string>("make_thumbnail", { path: it.thumbSource });
+          thumbsRef.current[it.key] = url;
+          if (!cancelled) setThumbs({ ...thumbsRef.current });
+        } catch {
+          failedRef.current.add(it.key);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clips, library]);
 
   return (
     <section className="card">
@@ -130,9 +163,15 @@ export default function ClipList({ library, refreshKey, onSelect, onDelete, disa
       <ul className="clips">
         {items.map((c) => {
           const st = statusOf(c.rec);
+          const uploadedSegments = (c.rec?.segments ?? []).filter((s) => s.viewUrl);
           return (
             <li key={c.key}>
-              <div>
+              {thumbs[c.key] ? (
+                <img className="thumb" src={thumbs[c.key]} alt="" />
+              ) : (
+                <div className="thumb" />
+              )}
+              <div className="clip-main">
                 <div className="clip-name">{c.name}</div>
                 <div className="note">
                   {c.timeMs > 0 ? new Date(c.timeMs).toLocaleString("vi-VN") : "—"}
@@ -140,6 +179,15 @@ export default function ClipList({ library, refreshKey, onSelect, onDelete, disa
                   <span className={st.cls}>{st.text}</span>
                   {c.rec?.mkvDeleted && <span className="badge">MKV đã xóa</span>}
                 </div>
+                {uploadedSegments.map((s) => (
+                  <div className="seglink" key={s.id}>
+                    <span>{s.label}</span>
+                    <button onClick={() => copyLink(s.viewUrl!)}>Sao chép link</button>
+                    <button disabled={disabled} onClick={() => onDelete(c.key, s.viewUrl!, s.id)}>
+                      Xóa khỏi cloud
+                    </button>
+                  </div>
+                ))}
               </div>
               <div className="clip-actions">
                 {c.rec?.viewUrl && (
