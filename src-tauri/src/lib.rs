@@ -271,6 +271,7 @@ fn list_clips(dir: String) -> Vec<ClipInfo> {
     clips.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
     clips
 }
+
 // ---------- Thư viện clip (trạng thái từng clip) ----------
 
 fn library_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -298,6 +299,7 @@ fn save_library(app: tauri::AppHandle, json: String) -> Result<(), String> {
 fn path_exists(path: String) -> bool {
     Path::new(&path).is_file()
 }
+
 // ---------- FFmpeg ----------
 
 #[tauri::command]
@@ -402,46 +404,75 @@ struct UploadTicket {
     view_url: String,
 }
 
+enum UploadError {
+    Cancelled,
+    Retryable(String),
+    Fatal(String),
+}
+
+const MAX_ATTEMPTS: u32 = 3;
+
 #[tauri::command]
 fn cancel_upload(state: State<'_, UploadState>) {
     state.cancel.store(true, Ordering::Relaxed);
 }
 
-#[tauri::command]
-async fn upload_video(
-    app: tauri::AppHandle,
-    state: State<'_, UploadState>,
-    path: String,
-    limit_kbps: u64, // 0 = không giới hạn
-) -> Result<String, String> {
-    let settings = load_settings(&app);
-    if settings.worker_url.is_empty() || settings.api_token.is_empty() {
-        return Err("Chưa cài đặt địa chỉ Worker hoặc mã bí mật.".into());
-    }
-
-    let cancel = state.cancel.clone();
-    cancel.store(false, Ordering::Relaxed);
-
-    let client = reqwest::Client::new();
-
-    // 1. Xin link upload tạm từ Worker
-    let ticket: UploadTicket = client
+// Xin link upload tạm từ Worker
+async fn request_ticket(
+    client: &reqwest::Client,
+    settings: &Settings,
+) -> Result<UploadTicket, UploadError> {
+    let res = client
         .post(format!("{}/api/uploads", settings.worker_url))
         .bearer_auth(&settings.api_token)
+        .timeout(Duration::from_secs(30))
         .send()
         .await
-        .map_err(|e| format!("Không kết nối được Worker: {}", e.without_url()))?
-        .error_for_status()
-        .map_err(|e| format!("Worker từ chối yêu cầu (kiểm tra mã bí mật): {}", e.without_url()))?
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            UploadError::Retryable(format!(
+                "Không kết nối được Worker (kiểm tra mạng hoặc địa chỉ Worker): {}.",
+                e.without_url()
+            ))
+        })?;
 
-    // 2. Mở file và tạo luồng dữ liệu có giới hạn tốc độ
-    let file = tokio::fs::File::open(&path)
+    let status = res.status();
+    if status.as_u16() == 401 {
+        return Err(UploadError::Fatal(
+            "Mã bí mật không đúng. Hãy kiểm tra lại API_TOKEN trong Cài đặt Cloud.".into(),
+        ));
+    }
+    if status.is_server_error() {
+        return Err(UploadError::Retryable(format!("Worker đang lỗi ({status}).")));
+    }
+    if !status.is_success() {
+        return Err(UploadError::Fatal(format!(
+            "Worker từ chối yêu cầu ({status}). Kiểm tra địa chỉ Worker."
+        )));
+    }
+
+    res.json::<UploadTicket>().await.map_err(|e| {
+        UploadError::Fatal(format!("Phản hồi từ Worker không hợp lệ: {}.", e.without_url()))
+    })
+}
+
+// Đẩy file lên Backblaze bằng link tạm, có giới hạn tốc độ
+async fn put_file(
+    app: &tauri::AppHandle,
+    client: &reqwest::Client,
+    upload_url: &str,
+    path: &str,
+    limit_kbps: u64,
+    cancel: Arc<AtomicBool>,
+) -> Result<(), UploadError> {
+    let file = tokio::fs::File::open(path)
         .await
-        .map_err(|e| format!("Không mở được file: {e}"))?;
-    let total = file.metadata().await.map_err(|e| e.to_string())?.len();
+        .map_err(|e| UploadError::Fatal(format!("Không mở được file: {e}")))?;
+    let total = file
+        .metadata()
+        .await
+        .map_err(|e| UploadError::Fatal(e.to_string()))?
+        .len();
+
     let limit_bps = limit_kbps * 1024;
     let start = Instant::now();
     let sent = Arc::new(AtomicU64::new(0));
@@ -479,32 +510,119 @@ async fn upload_video(
         }
     });
 
-    // 3. Đẩy file thẳng lên Backblaze bằng link tạm
-    let response = client
-        .put(&ticket.upload_url)
+    // Thời gian chờ tối đa: gấp đôi thời gian dự kiến, tối thiểu 2 phút
+    let assumed_bps: f64 = if limit_bps > 0 {
+        limit_bps as f64
+    } else {
+        50.0 * 1024.0
+    };
+    let timeout_secs = ((total as f64 / assumed_bps) * 2.0).max(120.0) as u64;
+
+    let result = client
+        .put(upload_url)
         .header(reqwest::header::CONTENT_TYPE, "video/mp4")
         .header(reqwest::header::CONTENT_LENGTH, total)
+        .timeout(Duration::from_secs(timeout_secs))
         .body(reqwest::Body::wrap_stream(stream))
         .send()
-        .await
-        .map_err(|e| {
-            if cancel.load(Ordering::Relaxed) {
-                "Đã hủy upload.".to_string()
-            } else {
-                format!("Upload lỗi: {}", e.without_url())
-            }
-        })?;
+        .await;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        let short: String = body.chars().take(300).collect();
-        return Err(format!("Backblaze trả về lỗi {status}: {short}"));
+    if cancel.load(Ordering::Relaxed) {
+        return Err(UploadError::Cancelled);
     }
 
-    let _ = app.emit("upload-progress", (total, total));
-    Ok(ticket.view_url)
+    let response = result.map_err(|e| {
+        UploadError::Retryable(format!("Mất kết nối khi upload: {}.", e.without_url()))
+    })?;
+
+    let status = response.status();
+    if status.is_success() {
+        let _ = app.emit("upload-progress", (total, total));
+        return Ok(());
+    }
+
+    let body = response.text().await.unwrap_or_default();
+    let short: String = body.chars().take(300).collect();
+    if status.is_server_error() || status.as_u16() == 408 || status.as_u16() == 429 {
+        Err(UploadError::Retryable(format!("Backblaze tạm thời lỗi ({status}).")))
+    } else {
+        Err(UploadError::Fatal(format!(
+            "Backblaze từ chối upload ({status}): {short}"
+        )))
+    }
 }
+
+#[tauri::command]
+async fn upload_video(
+    app: tauri::AppHandle,
+    state: State<'_, UploadState>,
+    path: String,
+    limit_kbps: u64, // 0 = không giới hạn
+) -> Result<String, String> {
+    let settings = load_settings(&app);
+    if settings.worker_url.is_empty() || settings.api_token.is_empty() {
+        return Err("Chưa cài đặt địa chỉ Worker hoặc mã bí mật.".into());
+    }
+
+    let cancel = state.cancel.clone();
+    cancel.store(false, Ordering::Relaxed);
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut last_error = String::new();
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        if attempt > 1 {
+            // Chờ trước khi thử lại, vẫn cho phép hủy
+            let wait = 5u64 * (attempt as u64 - 1);
+            for remaining in (1..=wait).rev() {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err("Đã hủy upload.".into());
+                }
+                let _ = app.emit(
+                    "upload-status",
+                    format!(
+                        "{last_error} Thử lại lần {attempt}/{MAX_ATTEMPTS} sau {remaining} giây..."
+                    ),
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            let _ = app.emit("upload-progress", (0u64, 1u64));
+        }
+
+        let outcome = async {
+            let ticket = request_ticket(&client, &settings).await?;
+            put_file(
+                &app,
+                &client,
+                &ticket.upload_url,
+                &path,
+                limit_kbps,
+                cancel.clone(),
+            )
+            .await?;
+            Ok::<String, UploadError>(ticket.view_url)
+        }
+        .await;
+
+        match outcome {
+            Ok(url) => return Ok(url),
+            Err(UploadError::Cancelled) => return Err("Đã hủy upload.".into()),
+            Err(UploadError::Fatal(m)) => return Err(m),
+            Err(UploadError::Retryable(m)) => last_error = m,
+        }
+    }
+
+    Err(format!(
+        "{last_error} Đã thử {MAX_ATTEMPTS} lần nhưng không thành công. Hãy kiểm tra mạng rồi thử lại."
+    ))
+}
+
+// ---------- Xóa video trên Cloud ----------
+
 #[tauri::command]
 async fn delete_video(app: tauri::AppHandle, view_url: String) -> Result<(), String> {
     let settings = load_settings(&app);
@@ -533,6 +651,7 @@ async fn delete_video(app: tauri::AppHandle, view_url: String) -> Result<(), Str
     }
     Ok(())
 }
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -567,7 +686,6 @@ pub fn run() {
             upload_video,
             cancel_upload,
             delete_video
-         
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

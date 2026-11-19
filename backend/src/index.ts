@@ -100,10 +100,19 @@ function viewerPage(id: string): Response {
     html, body { margin: 0; height: 100%; background: #111; }
     body { display: flex; align-items: center; justify-content: center; }
     video { max-width: 100%; max-height: 100vh; }
+    p { color: #aaa; font-family: system-ui, sans-serif; text-align: center; padding: 0 20px; }
   </style>
 </head>
 <body>
   <video src="/media/${id}" controls autoplay playsinline></video>
+  <p id="err" hidden>Không tải được video. Video có thể đã bị xóa hoặc mạng đang gặp sự cố.</p>
+  <script>
+    var v = document.querySelector("video");
+    v.addEventListener("error", function () {
+      v.hidden = true;
+      document.getElementById("err").hidden = false;
+    });
+  </script>
 </body>
 </html>`;
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });

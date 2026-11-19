@@ -14,16 +14,23 @@ export default function UploadPanel({ outputPath, onBusyChange, onUploaded }: Pr
   const [limit, setLimit] = useState("2048");
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState<[number, number] | null>(null);
+  const [note, setNote] = useState("");
   const [link, setLink] = useState("");
   const [message, setMessage] = useState("");
   const startedAt = useRef(0);
 
   useEffect(() => {
-    const unlisten = listen<[number, number]>("upload-progress", (e) =>
-      setProgress(e.payload)
-    );
+    const unlistenProgress = listen<[number, number]>("upload-progress", (e) => {
+      setProgress(e.payload);
+      if (e.payload[0] > 0) setNote("");
+    });
+    const unlistenStatus = listen<string>("upload-status", (e) => {
+      setNote(e.payload);
+      startedAt.current = Date.now(); // tính lại tốc độ cho lần thử mới
+    });
     return () => {
-      unlisten.then((f) => f());
+      unlistenProgress.then((f) => f());
+      unlistenStatus.then((f) => f());
     };
   }, []);
 
@@ -34,13 +41,17 @@ export default function UploadPanel({ outputPath, onBusyChange, onUploaded }: Pr
   const percent = progress && progress[1] > 0 ? (progress[0] / progress[1]) * 100 : 0;
 
   let statusText = message;
-  if (uploading && progress) {
-    const seconds = Math.max(0.5, (Date.now() - startedAt.current) / 1000);
-    const mbDone = progress[0] / 1024 / 1024;
-    const mbTotal = progress[1] / 1024 / 1024;
-    statusText =
-      `Đang upload... ${percent.toFixed(0)}% ` +
-      `(${mbDone.toFixed(1)}/${mbTotal.toFixed(1)} MB, ${(mbDone / seconds).toFixed(1)} MB/s)`;
+  if (uploading) {
+    if (note) {
+      statusText = note;
+    } else if (progress) {
+      const seconds = Math.max(0.5, (Date.now() - startedAt.current) / 1000);
+      const mbDone = progress[0] / 1024 / 1024;
+      const mbTotal = progress[1] / 1024 / 1024;
+      statusText =
+        `Đang upload... ${percent.toFixed(0)}% ` +
+        `(${mbDone.toFixed(1)}/${mbTotal.toFixed(1)} MB, ${(mbDone / seconds).toFixed(1)} MB/s)`;
+    }
   }
 
   const start = async () => {
@@ -57,6 +68,7 @@ export default function UploadPanel({ outputPath, onBusyChange, onUploaded }: Pr
     setUploading(true);
     setLink("");
     setProgress(null);
+    setNote("");
     setMessage("Đang kết nối...");
     startedAt.current = Date.now();
 
@@ -76,6 +88,7 @@ export default function UploadPanel({ outputPath, onBusyChange, onUploaded }: Pr
     } catch (e) {
       setMessage("Lỗi: " + e);
     } finally {
+      setNote("");
       setUploading(false);
     }
   };
