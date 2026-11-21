@@ -24,13 +24,26 @@ const GAME_PROCESS: &str = "VALORANT-Win64-Shipping.exe";
 
 // ---------- Cài đặt (lưu trong thư mục cấu hình của app) ----------
 
-#[derive(Serialize, Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 struct Settings {
     worker_url: String,
     api_token: String,
     watch_dir: String,
     auto_delete_mkv: bool,
+    pause_while_game: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            worker_url: String::new(),
+            api_token: String::new(),
+            watch_dir: String::new(),
+            auto_delete_mkv: false,
+            pause_while_game: true,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -39,6 +52,7 @@ struct PublicSettings {
     has_token: bool,
     watch_dir: String,
     auto_delete_mkv: bool,
+    pause_while_game: bool,
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -68,6 +82,7 @@ fn get_settings(app: tauri::AppHandle) -> PublicSettings {
         has_token: !s.api_token.is_empty(),
         watch_dir: s.watch_dir,
         auto_delete_mkv: s.auto_delete_mkv,
+        pause_while_game: s.pause_while_game,
     }
 }
 
@@ -134,6 +149,17 @@ fn is_game_running() -> bool {
         }
     }
     false
+}
+
+fn should_pause_for_game(app: &tauri::AppHandle) -> bool {
+    load_settings(app).pause_while_game && is_game_running()
+}
+
+#[tauri::command]
+fn set_pause_while_game(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let mut s = load_settings(&app);
+    s.pause_while_game = enabled;
+    write_settings(&app, &s)
 }
 
 // ---------- Theo dõi thư mục clip ----------
@@ -348,6 +374,9 @@ async fn remux_video(
     duration_ms: u64, // 0 = lấy tới hết file
     precise: bool,
 ) -> Result<(), String> {
+    if should_pause_for_game(&app) {
+        return Err("Đã tạm dừng xử lý vì Valorant đang chạy.".into());
+    }
     let audio_codec = if copy_audio { "copy" } else { "aac" };
 
     let mut args: Vec<String> = vec!["-y".into()];
@@ -434,6 +463,9 @@ fn has_file(p: &Path) -> bool {
 
 #[tauri::command]
 async fn make_thumbnail(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    if should_pause_for_game(&app) {
+        return Err("Đã tạm dừng xử lý vì Valorant đang chạy.".into());
+    }
     let meta = std::fs::metadata(&path).map_err(|_| "Không tìm thấy file video.".to_string())?;
     let mtime = meta
         .modified()
@@ -742,6 +774,9 @@ async fn upload_thumbnail(
     video: &str,
     url: &str,
 ) -> Result<(), String> {
+    if should_pause_for_game(app) {
+        return Err("Đã tạm dừng xử lý vì Valorant đang chạy.".into());
+    }
     let dir = app
         .path()
         .app_cache_dir()
@@ -801,6 +836,9 @@ async fn upload_video(
     limit_kbps: u64, // 0 = không giới hạn
     slug: Option<String>,
 ) -> Result<String, String> {
+    if should_pause_for_game(&app) {
+        return Err("Đã tạm dừng upload vì Valorant đang chạy.".into());
+    }
     let slug = slug.unwrap_or_default();
     let settings = load_settings(&app);
     if settings.worker_url.is_empty() || settings.api_token.is_empty() {
@@ -901,6 +939,37 @@ async fn delete_video(app: tauri::AppHandle, view_url: String) -> Result<(), Str
     }
     Ok(())
 }
+
+#[derive(Deserialize, Serialize)]
+struct CloudVideo {
+    id: String,
+    size: u64,
+    modified: String,
+    #[serde(rename = "hasThumbnail")]
+    has_thumbnail: bool,
+}
+
+#[tauri::command]
+async fn list_cloud_videos(app: tauri::AppHandle) -> Result<Vec<CloudVideo>, String> {
+    let settings = load_settings(&app);
+    if settings.worker_url.is_empty() {
+        return Err("Chưa cài đặt địa chỉ Worker.".into());
+    }
+
+    let res = reqwest::Client::new()
+        .get(format!("{}/api/videos", settings.worker_url))
+        .send()
+        .await
+        .map_err(|e| format!("Không kết nối được thư viện Cloud: {}", e.without_url()))?;
+
+    if !res.status().is_success() {
+        return Err(format!("Không tải được thư viện ({})", res.status()));
+    }
+
+    res.json::<Vec<CloudVideo>>()
+        .await
+        .map_err(|e| format!("Phản hồi thư viện không hợp lệ: {}", e.without_url()))
+}
 // ---------- Dự án dựng phim ----------
 
 fn projects_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -950,6 +1019,9 @@ async fn run_ffmpeg(
     state: State<'_, ComposeState>,
     args: Vec<String>,
 ) -> Result<(), String> {
+    if should_pause_for_game(&app) {
+        return Err("Đã tạm dừng dựng phim vì Valorant đang chạy.".into());
+    }
     if args.is_empty() {
         return Err("Thiếu tham số FFmpeg.".into());
     }
@@ -1052,6 +1124,7 @@ pub fn run() {
             is_game_running,
             get_settings,
             save_settings,
+            set_pause_while_game,
             set_watch_dir,
             list_clips,
             load_library,
@@ -1060,6 +1133,7 @@ pub fn run() {
             upload_video,
             cancel_upload,
             delete_video,
+            list_cloud_videos,
             set_auto_delete_mkv,
             trash_source_after_verify,
             make_thumbnail,

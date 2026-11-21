@@ -18,30 +18,103 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
 }
 
-.container {
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 24px 20px 40px;
+/* ---------- Bố cục 3 cột ---------- */
+
+.app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  flex: none;
+  padding: 8px 18px;
+  border-bottom: 1px solid #34343b;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.performance-status {
+  margin-left: 4px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #263b32;
+  color: var(--green);
+  font-size: 0.82rem;
+}
+
+.performance-status.paused {
+  background: #44372a;
+  color: #ffd36a;
+}
+
+.layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr) 340px;
+  gap: 14px;
+  padding: 14px;
+}
+
+.col {
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  text-align: center;
+  padding-right: 4px;
+  text-align: left;
 }
 
-h1 {
-  margin: 8px 0 12px;
-  font-size: 1.6rem;
+@media (max-width: 1100px) {
+  html,
+  body,
+  #root {
+    height: auto;
+  }
+  .app {
+    height: auto;
+  }
+  .layout {
+    display: flex;
+    flex-direction: column;
+  }
+  .col {
+    overflow: visible;
+  }
 }
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #45454d;
+  border-radius: 4px;
+}
+
+/* ---------- Thành phần chung ---------- */
 
 button,
 input,
 select {
   width: 100%;
-  padding: 0.65em 1em;
+  padding: 0.6em 0.9em;
   border: 1px solid transparent;
   border-radius: 8px;
   background: var(--field);
@@ -64,7 +137,6 @@ button:disabled {
 }
 
 details {
-  text-align: left;
   background: var(--panel);
   border-radius: 8px;
   padding: 10px 14px;
@@ -76,10 +148,9 @@ summary {
 
 label {
   display: block;
-  margin: 10px 0 4px;
+  margin: 8px 0 4px;
   font-size: 0.9em;
   color: var(--muted);
-  text-align: left;
 }
 
 details button {
@@ -93,12 +164,16 @@ details button {
   background: var(--panel);
   border-radius: 8px;
   padding: 12px 14px;
-  margin-top: 6px;
 }
 
 .row {
   display: flex;
   gap: 8px;
+  align-items: center;
+}
+
+.row button {
+  flex: 1;
 }
 
 .path {
@@ -112,7 +187,7 @@ details button {
   background: var(--panel);
   border-radius: 8px;
   font-family: Consolas, monospace;
-  text-align: left;
+  font-size: 0.9em;
   white-space: pre-wrap;
 }
 
@@ -134,46 +209,33 @@ details button {
   height: 100%;
   transition: width 0.2s;
 }
-.clips {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 240px;
-  overflow-y: auto;
-}
 
-.clips li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 10px;
-  background: var(--field);
-  border-radius: 8px;
-  text-align: left;
-}
-
-.clips li button {
-  width: auto;
-  white-space: nowrap;
-}
-
-.clip-name {
-  word-break: break-all;
-}
 .preview {
   width: 100%;
-  max-height: 300px;
+  max-height: 46vh;
   background: #000;
   border-radius: 8px;
 }
 
-.clip-actions {
+.check {
   display: flex;
+  align-items: center;
   gap: 8px;
+  margin: 0;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.check input {
+  width: auto;
+  margin: 0;
+}
+
+input[type="range"] {
+  padding: 0;
+  height: 24px;
+  background: transparent;
+  accent-color: var(--accent);
 }
 
 .badge {
@@ -195,77 +257,26 @@ details button {
   background: #2c4a1d;
   color: var(--green);
 }
-input[type="range"] {
+
+/* ---------- Danh sách clip ---------- */
+
+.clips {
+  list-style: none;
+  margin: 0;
   padding: 0;
-  height: 24px;
-  background: transparent;
-  accent-color: var(--accent);
-}
-
-.row button {
-  flex: 1;
-}
-.check {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  text-align: left;
-  color: var(--text);
-  cursor: pointer;
-}
-
-.check input {
-  width: auto;
-  margin: 0;
-}
-.timeline {
-  position: relative;
-  height: 34px;
-  background: var(--field);
-  border-radius: 6px;
-  cursor: pointer;
-  overflow: hidden;
-}
-
-.seg {
-  position: absolute;
-  top: 4px;
-  bottom: 4px;
-  min-width: 6px;
-  background: var(--accent);
-  opacity: 0.55;
-  border-radius: 4px;
-  border: 2px solid transparent;
-  box-sizing: border-box;
-}
-
-.seg.cut {
-  background: #3b7bd8;
-}
-
-.seg.up {
-  background: var(--green);
-}
-
-.seg.sel {
-  opacity: 1;
-  border-color: #fff;
-}
-
-.playhead {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: #ff4d6a;
-  pointer-events: none;
-}
-
-.seg-edit {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.clips li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 10px;
+  padding: 8px 10px;
+  background: var(--field);
+  border-radius: 8px;
 }
 
 .thumb {
@@ -282,9 +293,23 @@ input[type="range"] {
   min-width: 0;
 }
 
+.clip-name {
+  word-break: break-all;
+}
+
 .clip-actions {
+  width: 100%;
+  display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  gap: 6px;
+}
+
+.clip-actions button {
+  flex: 1;
+  width: auto;
+  white-space: nowrap;
+  padding: 0.4em 0.6em;
+  font-size: 0.9em;
 }
 
 .seglink {
@@ -295,8 +320,372 @@ input[type="range"] {
   font-size: 0.85em;
 }
 
+.seglink span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .seglink button {
   width: auto;
   padding: 0.25em 0.7em;
   font-size: 0.9em;
+}
+
+/* ---------- Thanh thời gian ---------- */
+
+.zoom {
+  flex: 1;
+  margin: 0;
+  font-size: 0.85em;
+}
+
+.timeline-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--field);
+  border-radius: 6px;
+}
+
+.timeline {
+  position: relative;
+  height: 64px;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+.ruler-tick {
+  position: absolute;
+  top: 0;
+  height: 14px;
+  padding-left: 3px;
+  border-left: 1px solid #555;
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.seg {
+  position: absolute;
+  top: 20px;
+  bottom: 6px;
+  min-width: 14px;
+  display: flex;
+  align-items: center;
+  background: var(--accent);
+  opacity: 0.6;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+
+.seg:active {
+  cursor: grabbing;
+}
+
+.seg.cut {
+  background: #5b93e8;
+}
+
+.seg.up {
+  background: var(--green);
+}
+
+.seg.sel {
+  opacity: 1;
+  border-color: #fff;
+}
+
+.seg-label {
+  flex: 1;
+  min-width: 0;
+  padding: 0 12px;
+  font-size: 11px;
+  color: #0b1d2a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.seg-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  background: rgba(255, 255, 255, 0.6);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.seg-handle.l {
+  left: 0;
+}
+
+.seg-handle.r {
+  right: 0;
+}
+
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #ff4d6a;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.seg-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* ---------- Tab chuyển màn hình ---------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.tab {
+  width: auto;
+  padding: 0.35em 1em;
+  background: transparent;
+  border: 1px solid #3a3a42;
+}
+
+.tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06222a;
+}
+
+.view {
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.library-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.library-toolbar {
+  display: flex;
+  gap: 8px;
+  max-width: 720px;
+  margin-bottom: 14px;
+}
+
+.library-toolbar button {
+  width: auto;
+  white-space: nowrap;
+}
+
+.library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.library-card {
+  overflow: hidden;
+  border: 1px solid #34343b;
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.library-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #111;
+}
+
+.library-thumb-empty {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.library-card-body {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.library-name {
+  overflow-wrap: anywhere;
+}
+
+.library-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.library-actions button {
+  flex: 1;
+  padding: 0.45em 0.6em;
+  font-size: 0.85rem;
+}
+
+.library-actions .secondary {
+  border-color: #45454d;
+}
+
+.library-actions .danger {
+  background: #55343a;
+  color: #ffdfe5;
+}
+
+.library-empty {
+  margin: 40px 0;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ---------- Dựng phim ---------- */
+
+.src {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--field);
+  border-radius: 8px;
+}
+
+.src-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.src-actions button {
+  width: auto;
+  padding: 0.3em 0.7em;
+  font-size: 0.85em;
+}
+
+.ct-wrap {
+  display: flex;
+  background: var(--field);
+  border-radius: 6px;
+}
+
+.ct-labels {
+  flex: none;
+  width: 54px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ct-label {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding-left: 8px;
+  font-size: 11px;
+}
+
+.ct-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.ct-timeline {
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+.ct-tick {
+  position: absolute;
+  top: 0;
+  height: 16px;
+  padding-left: 3px;
+  border-left: 1px solid #555;
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.ct-block {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+
+.ct-block:active {
+  cursor: grabbing;
+}
+
+.ct-block.v {
+  background: #3b7bd8;
+}
+
+.ct-block.m {
+  background: #a35bd6;
+}
+
+.ct-block.sel {
+  border-color: #fff;
+}
+
+.ct-block-text {
+  flex: 1;
+  min-width: 0;
+  padding: 0 12px;
+  font-size: 11px;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.ct-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  background: rgba(255, 255, 255, 0.55);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.ct-handle.l {
+  left: 0;
+}
+
+.ct-handle.r {
+  right: 0;
 }

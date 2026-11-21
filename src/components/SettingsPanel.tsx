@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
-type PublicSettings = { worker_url: string; has_token: boolean };
+type PublicSettings = {
+  worker_url: string;
+  has_token: boolean;
+  pause_while_game: boolean;
+};
 
 export default function SettingsPanel() {
   const [workerUrl, setWorkerUrl] = useState("");
   const [token, setToken] = useState("");
   const [hasToken, setHasToken] = useState(false);
+  const [pauseWhileGame, setPauseWhileGame] = useState(true);
   const [message, setMessage] = useState("");
   const [isOpen, setIsOpen] = useState(false);
 
@@ -14,6 +20,7 @@ export default function SettingsPanel() {
     const s = await invoke<PublicSettings>("get_settings");
     setWorkerUrl(s.worker_url);
     setHasToken(s.has_token);
+    setPauseWhileGame(s.pause_while_game);
     if (!s.worker_url || !s.has_token) setIsOpen(true);
   };
 
@@ -24,6 +31,7 @@ export default function SettingsPanel() {
   const saveSettings = async () => {
     try {
       await invoke("save_settings", { workerUrl, apiToken: token });
+      await invoke("set_pause_while_game", { enabled: pauseWhileGame });
       setToken("");
       setMessage("Đã lưu cài đặt.");
       await load();
@@ -40,7 +48,7 @@ export default function SettingsPanel() {
       <input
         id="worker-url"
         value={workerUrl}
-        placeholder="https://backend.hl-clips.workers.dev"
+        placeholder="https://nghapiti-highlight.hl-clips.workers.dev"
         onChange={(e) => setWorkerUrl(e.target.value)}
       />
 
@@ -53,7 +61,24 @@ export default function SettingsPanel() {
         onChange={(e) => setToken(e.target.value)}
       />
 
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={pauseWhileGame}
+          onChange={(e) => setPauseWhileGame(e.target.checked)}
+        />
+        Tạm dừng xử lý và upload khi Valorant đang chạy
+      </label>
+
       <button onClick={saveSettings}>Lưu cài đặt</button>
+      {workerUrl && (
+        <button
+          type="button"
+          onClick={() => openUrl(`${workerUrl.replace(/\/$/, "")}/library`)}
+        >
+          Mở thư viện clip trên web
+        </button>
+      )}
       {message && <p className="note">{message}</p>}
     </details>
   );

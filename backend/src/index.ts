@@ -148,6 +148,65 @@ async function objectExists(env: Env, key: string): Promise<boolean> {
   }
 }
 
+type GalleryVideo = {
+  id: string;
+  size: number;
+  modified: string;
+  hasThumbnail: boolean;
+};
+
+async function listVideos(env: Env): Promise<GalleryVideo[]> {
+  if (!env.B2_KEY_ID?.trim() || !env.B2_APP_KEY?.trim()) {
+    throw new Error("Backblaze credentials missing");
+  }
+
+  const url = new URL(`https://${env.B2_ENDPOINT_HOST}/${env.BUCKET_NAME}`);
+  url.searchParams.set("list-type", "2");
+  url.searchParams.set("prefix", "videos/");
+  url.searchParams.set("max-keys", "1000");
+
+  const signed = await makeClient(env).sign(
+    new Request(url, { method: "GET" }),
+    { aws: { signQuery: true } }
+  );
+  const response = await fetch(signed.url, { method: "GET" });
+  if (!response.ok) {
+    throw new Error(`Backblaze returned ${response.status}`);
+  }
+
+  const xml = await response.text();
+  const objects = new Map<string, { size: number; modified: string }>();
+  const keys = new Set<string>();
+
+  for (const block of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
+    const content = block[1];
+    const key = content.match(/<Key>([\s\S]*?)<\/Key>/)?.[1]?.trim();
+    if (!key) continue;
+    keys.add(key);
+
+    const size = Number(content.match(/<Size>(\d+)<\/Size>/)?.[1] ?? 0);
+    const modified = content.match(/<LastModified>([\s\S]*?)<\/LastModified>/)?.[1]?.trim() ?? "";
+    const relative = key.startsWith("videos/")
+      ? key.slice("videos/".length)
+      : key;
+    objects.set(relative, { size, modified });
+  }
+
+  return Array.from(objects.entries())
+    .filter(([name]) => name.endsWith(".mp4"))
+    .map(([name, details]) => {
+      const id = name.replace(/\.mp4$/i, "");
+      return {
+        id,
+        size: details.size,
+        modified: details.modified,
+        hasThumbnail: keys.has(`videos/${id}.jpg`),
+      };
+    })
+    .filter((video) => ID_PATTERN.test(video.id))
+    .sort((a, b) => b.modified.localeCompare(a.modified));
+}
+
 async function deleteVideo(request: Request, env: Env, id: string): Promise<Response> {
   if (request.headers.get("Authorization") !== `Bearer ${env.API_TOKEN}`) {
     return new Response("Unauthorized", { status: 401 });
@@ -166,6 +225,140 @@ async function deleteVideo(request: Request, env: Env, id: string): Promise<Resp
   // Xóa luôn ảnh xem trước (video cũ không có ảnh thì bỏ qua)
   await client.fetch(`${base}.jpg`, { method: "DELETE" }).catch(() => {});
   return Response.json({ deleted: true });
+}
+
+async function libraryApi(env: Env): Promise<Response> {
+  try {
+    const videos = await listVideos(env);
+    return Response.json(videos, {
+      headers: { "Cache-Control": "private, no-store" },
+    });
+  } catch {
+    return Response.json(
+      { error: "gallery_unavailable" },
+      { status: 502 }
+    );
+  }
+}
+
+function galleryPage(): Response {
+  const html = `<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Thư viện Highlight</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #17171b; color: #f4f4f5; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 24px; border-bottom: 1px solid #34343b; }
+    h1 { margin: 0; font-size: 20px; }
+    main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    .toolbar { display: flex; gap: 10px; margin-bottom: 18px; }
+    input { width: 100%; padding: 11px 12px; border: 1px solid #3b3b44; border-radius: 8px; background: #232329; color: #fff; font: inherit; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+    .card { overflow: hidden; border: 1px solid #34343b; border-radius: 12px; background: #232329; }
+    .thumb { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #111; }
+    .body { display: grid; gap: 10px; padding: 12px; }
+    .name { font-weight: 700; overflow-wrap: anywhere; }
+    .meta { color: #aaaab4; font-size: 13px; }
+    .actions { display: flex; gap: 8px; }
+    button, .link { flex: 1; border: 0; border-radius: 7px; background: #24c8db; color: #08262b; text-align: center; text-decoration: none; padding: 9px; font: inherit; cursor: pointer; }
+    button.secondary { background: #3a3a43; color: #fff; }
+    .message { color: #aaaab4; text-align: center; padding: 40px 10px; }
+  </style>
+</head>
+<body>
+  <header><h1>Thư viện Highlight</h1><span id="count"></span></header>
+  <main>
+    <div class="toolbar"><input id="search" type="search" placeholder="Tìm theo tên link..." /></div>
+    <div id="grid" class="grid"></div>
+    <p id="message" class="message">Đang tải clip...</p>
+  </main>
+  <script>
+    var all = [];
+    var grid = document.getElementById("grid");
+    var message = document.getElementById("message");
+    var count = document.getElementById("count");
+
+    function formatSize(bytes) {
+      if (!bytes) return "";
+      return (bytes / 1024 / 1024).toFixed(1) + " MB";
+    }
+
+    function render() {
+      var query = document.getElementById("search").value.toLowerCase().trim();
+      var videos = all.filter(function (video) {
+        return !query || video.id.toLowerCase().includes(query);
+      });
+      count.textContent = videos.length + " clip";
+      grid.innerHTML = "";
+      message.hidden = videos.length > 0;
+      videos.forEach(function (video) {
+        var card = document.createElement("article");
+        card.className = "card";
+        var thumb = document.createElement("img");
+        thumb.className = "thumb";
+        thumb.loading = "lazy";
+        thumb.alt = "";
+        thumb.src = video.hasThumbnail ? "/thumb/" + encodeURIComponent(video.id) + ".jpg" : "";
+        thumb.onerror = function () { thumb.hidden = true; };
+        var body = document.createElement("div");
+        body.className = "body";
+        var name = document.createElement("div");
+        name.className = "name";
+        name.textContent = video.id;
+        var meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = [formatSize(video.size), video.modified ? new Date(video.modified).toLocaleString("vi-VN") : ""].filter(Boolean).join(" · ");
+        var actions = document.createElement("div");
+        actions.className = "actions";
+        var view = document.createElement("a");
+        view.className = "link";
+        view.href = "/v/" + encodeURIComponent(video.id);
+        view.textContent = "Xem";
+        var copy = document.createElement("button");
+        copy.className = "secondary";
+        copy.textContent = "Sao chép link";
+        copy.onclick = function () {
+          navigator.clipboard.writeText(location.origin + "/v/" + video.id).then(function () {
+            copy.textContent = "Đã sao chép";
+            setTimeout(function () { copy.textContent = "Sao chép link"; }, 1500);
+          });
+        };
+        actions.append(view, copy);
+        body.append(name, meta, actions);
+        card.append(thumb, body);
+        grid.append(card);
+      });
+    }
+
+    fetch("/api/videos").then(function (response) {
+      if (!response.ok) throw new Error("Không tải được danh sách");
+      return response.json();
+    }).then(function (videos) {
+      all = videos;
+      message.hidden = true;
+      if (!videos.length) {
+        message.hidden = false;
+        message.textContent = "Chưa có clip nào được upload.";
+      }
+      render();
+    }).catch(function (error) {
+      message.textContent = error.message;
+    });
+
+    document.getElementById("search").addEventListener("input", render);
+  </script>
+</body>
+</html>`;
+  return new Response(html, {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
 }
 
 async function viewerPage(request: Request, env: Env, id: string): Promise<Response> {
@@ -228,6 +421,12 @@ export default {
 
     if (request.method === "POST" && pathname === "/api/uploads") {
       return createUpload(request, env);
+    }
+    if (readOnly && pathname === "/api/videos") {
+      return libraryApi(env);
+    }
+    if (readOnly && pathname === "/library") {
+      return galleryPage();
     }
     if (request.method === "DELETE" && pathname.startsWith("/api/videos/")) {
       return deleteVideo(request, env, pathname.slice("/api/videos/".length));

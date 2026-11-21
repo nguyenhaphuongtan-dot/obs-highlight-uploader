@@ -14,15 +14,26 @@
     "windows": [
       {
         "title": "obs-highlight-uploader",
-        "width": 800,
-        "height": 600
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600
       }
     ],
     "security": {
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["**/*.mkv", "**/*.mp4"]
+        "scope": [
+          "**/*.mkv",
+          "**/*.mp4",
+          "**/*.mp3",
+          "**/*.wav",
+          "**/*.m4a",
+          "**/*.aac",
+          "**/*.ogg",
+          "**/*.flac"
+        ]
       }
     }
   },
