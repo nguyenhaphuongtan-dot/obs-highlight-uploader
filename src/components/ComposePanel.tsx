@@ -220,12 +220,10 @@ export default function ComposePanel({ visible, onBusyChange }: Props) {
     if (!project || project.clips.length === 0) return;
 
     if (await invoke<boolean>("is_game_running")) {
-      const ok = await ask(
-        "Valorant đang chạy. Dựng phim cần encode lại video và tốn nhiều CPU, " +
-          "có thể làm giảm FPS. Bạn vẫn muốn tiếp tục?",
-        { title: "Cảnh báo", kind: "warning", okLabel: "Vẫn dựng", cancelLabel: "Để sau" }
-      );
-      if (!ok) return;
+      const settings = await invoke<{ pause_while_game: boolean }>("get_settings");
+      if (settings.pause_while_game) {
+        setMessage("Đang chọn nơi lưu trước khi thêm vào hàng đợi...");
+      }
     }
 
     const safeName = project.name.replace(/[\\/:*?"<>|]/g, "_");
@@ -245,6 +243,21 @@ export default function ComposePanel({ visible, onBusyChange }: Props) {
     }
 
     const existedBefore = await invoke<boolean>("path_exists", { path: chosen });
+
+    const gameRunning = await invoke<boolean>("is_game_running");
+    const settings = await invoke<{ pause_while_game: boolean }>("get_settings");
+    if (gameRunning && settings.pause_while_game) {
+      await invoke("add_queue_job", {
+        kind: "compose",
+        payload: {
+          args: buildComposeArgs(project, chosen),
+          outputPath: chosen,
+          projectId: project.id,
+        },
+      });
+      setMessage("Đã thêm tác vụ dựng phim vào hàng đợi.");
+      return;
+    }
 
     setExporting(true);
     setProgressMs(0);

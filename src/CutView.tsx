@@ -274,6 +274,27 @@ export default function CutView({ onBusyChange }: { onBusyChange?: (busy: boolea
   const exportSegments = async (list: Segment[]) => {
     if (!info || !outputPath || list.length === 0) return;
 
+    const gameRunning = await invoke<boolean>("is_game_running");
+    const settings = await invoke<{ pause_while_game: boolean }>("get_settings");
+    if (gameRunning && settings.pause_while_game) {
+      for (const seg of list) {
+        const clipMs = seg.endMs - seg.startMs;
+        await invoke("add_queue_job", {
+          kind: "remux",
+          payload: {
+            input: outputPath,
+            output: cutFile(seg),
+            copyAudio: true,
+            startMs: Math.round(seg.startMs),
+            durationMs: Math.round(clipMs),
+            precise,
+          },
+        });
+      }
+      setMessage(`Đã thêm ${list.length} tác vụ cắt vào hàng đợi.`);
+      return;
+    }
+
     if (precise) {
       const proceed = await confirmIfGameRunning(
         "Valorant đang chạy. Cắt chính xác (encode lại) tốn CPU và có thể làm giảm FPS. Vẫn tiếp tục?",

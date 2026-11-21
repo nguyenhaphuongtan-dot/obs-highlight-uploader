@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import CutView from "./CutView";
 import ComposePanel from "./components/ComposePanel";
 import LibraryPanel from "./components/LibraryPanel";
@@ -15,6 +16,7 @@ export default function App() {
   const [libraryBusy, setLibraryBusy] = useState(false);
   const [gameRunning, setGameRunning] = useState(false);
   const [pauseWhileGame, setPauseWhileGame] = useState(true);
+  const [simpleMode, setSimpleMode] = useState(true);
   const busy = cutBusy || composeBusy || libraryBusy;
 
   useEffect(() => {
@@ -23,23 +25,32 @@ export default function App() {
       try {
         const [running, settings] = await Promise.all([
           invoke<boolean>("is_game_running"),
-          invoke<{ pause_while_game: boolean }>("get_settings"),
+          invoke<{ pause_while_game: boolean; simple_mode: boolean }>("get_settings"),
         ]);
         if (!cancelled) {
           setGameRunning(running);
           setPauseWhileGame(settings.pause_while_game);
+          setSimpleMode(settings.simple_mode);
         }
       } catch {
         // Giữ trạng thái cũ nếu tray app đang khởi tạo.
       }
     };
+    const unlisten = listen<string>("game-status", (event) => {
+      if (!cancelled) setGameRunning(event.payload === "running");
+    });
     refresh();
     const timer = window.setInterval(refresh, 3000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      unlisten.then((stop) => stop());
     };
   }, []);
+
+  useEffect(() => {
+    if (simpleMode && mode !== "cut") setMode("cut");
+  }, [simpleMode, mode]);
 
   const go = (m: Mode) => {
     if (m === mode) return;
@@ -67,34 +78,38 @@ export default function App() {
           >
             Cắt clip
           </button>
-          <button
-            className={mode === "compose" ? "tab active" : "tab"}
-            disabled={busy}
-            onClick={() => go("compose")}
-          >
-            Dựng phim
-          </button>
-          <button
-            className={mode === "library" ? "tab active" : "tab"}
-            disabled={busy}
-            onClick={() => go("library")}
-          >
-            Thư viện
-          </button>
-          <button
-            className={mode === "queue" ? "tab active" : "tab"}
-            disabled={busy}
-            onClick={() => go("queue")}
-          >
-            Hàng đợi
-          </button>
-          <button
-            className={mode === "performance" ? "tab active" : "tab"}
-            disabled={busy}
-            onClick={() => go("performance")}
-          >
-            Hiệu suất
-          </button>
+          {!simpleMode && (
+            <>
+              <button
+                className={mode === "compose" ? "tab active" : "tab"}
+                disabled={busy}
+                onClick={() => go("compose")}
+              >
+                Dựng phim
+              </button>
+              <button
+                className={mode === "library" ? "tab active" : "tab"}
+                disabled={busy}
+                onClick={() => go("library")}
+              >
+                Thư viện
+              </button>
+              <button
+                className={mode === "queue" ? "tab active" : "tab"}
+                disabled={busy}
+                onClick={() => go("queue")}
+              >
+                Hàng đợi
+              </button>
+              <button
+                className={mode === "performance" ? "tab active" : "tab"}
+                disabled={busy}
+                onClick={() => go("performance")}
+              >
+                Hiệu suất
+              </button>
+            </>
+          )}
         </nav>
       </header>
 

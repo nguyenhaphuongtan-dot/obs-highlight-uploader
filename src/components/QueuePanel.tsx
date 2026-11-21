@@ -68,6 +68,21 @@ export default function QueuePanel() {
             limitKbps: Number(job.payload.limitKbps ?? 2048),
             slug: String(job.payload.slug ?? ""),
           });
+        } else if (job.kind === "remux") {
+          await invoke("remux_video", {
+            input: String(job.payload.input ?? ""),
+            output: String(job.payload.output ?? ""),
+            copyAudio: Boolean(job.payload.copyAudio),
+            startMs: Number(job.payload.startMs ?? 0),
+            durationMs: Number(job.payload.durationMs ?? 0),
+            precise: Boolean(job.payload.precise),
+          });
+        } else if (job.kind === "compose") {
+          await invoke("run_ffmpeg", {
+            args: Array.isArray(job.payload.args)
+              ? job.payload.args
+              : [],
+          });
         } else {
           throw new Error(`Loại tác vụ chưa hỗ trợ: ${job.kind}`);
         }

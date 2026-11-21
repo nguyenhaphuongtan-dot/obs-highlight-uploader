@@ -19,9 +19,6 @@ use tauri_plugin_shell::{
 };
 use tokio_util::io::ReaderStream;
 
-// Tên tiến trình game cần cảnh báo
-const GAME_PROCESS: &str = "VALORANT-Win64-Shipping.exe";
-
 // ---------- Cài đặt (lưu trong thư mục cấu hình của app) ----------
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -36,6 +33,7 @@ struct Settings {
     encoder: String,
     optimization_applied: bool,
     auto_delete_after_upload: bool,
+    simple_mode: bool,
 }
 
 impl Default for Settings {
@@ -50,6 +48,7 @@ impl Default for Settings {
             encoder: "auto".into(),
             optimization_applied: false,
             auto_delete_after_upload: false,
+            simple_mode: true,
         }
     }
 }
@@ -95,6 +94,7 @@ struct PublicSettings {
     performance_profile: String,
     encoder: String,
     auto_delete_after_upload: bool,
+    simple_mode: bool,
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -166,7 +166,19 @@ fn load_benchmarks(app: &tauri::AppHandle) -> Vec<BenchmarkSample> {
 
 #[tauri::command]
 fn get_queue(app: tauri::AppHandle) -> JobQueue {
-    load_queue(&app)
+    let mut queue = load_queue(&app);
+    let mut changed = false;
+    for job in &mut queue.jobs {
+        if job.status == "running" {
+            job.status = "queued".into();
+            job.updated_at = now_ms();
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = write_queue(&app, &queue);
+    }
+    queue
 }
 
 #[tauri::command]
@@ -316,6 +328,7 @@ fn get_settings(app: tauri::AppHandle) -> PublicSettings {
         performance_profile: s.performance_profile,
         encoder: s.encoder,
         auto_delete_after_upload: s.auto_delete_after_upload,
+        simple_mode: s.simple_mode,
     }
 }
 
@@ -379,17 +392,30 @@ fn is_game_running() -> bool {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-        let output = std::process::Command::new("tasklist")
-            .args(["/FI", &format!("IMAGENAME eq {}", GAME_PROCESS), "/NH"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
-
-        if let Ok(out) = output {
-            let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
-            return text.contains(&GAME_PROCESS.to_lowercase());
+        let names = ["VALORANT-Win64-Shipping.exe", "VALORANT.exe"];
+        for name in names {
+            let output = std::process::Command::new("tasklist")
+                .args(["/FI", &format!("IMAGENAME eq {}", name), "/FO", "CSV", "/NH"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+            if let Ok(out) = output {
+                let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+                if text.contains(&name.to_lowercase()) {
+                    return true;
+                }
+            }
         }
     }
     false
+}
+
+#[tauri::command]
+fn get_game_status() -> String {
+    if is_game_running() {
+        "running".into()
+    } else {
+        "offline".into()
+    }
 }
 
 fn should_pause_for_game(app: &tauri::AppHandle) -> bool {
@@ -850,6 +876,13 @@ fn set_auto_delete_mkv(app: tauri::AppHandle, enabled: bool) -> Result<(), Strin
 fn set_auto_delete_after_upload(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let mut s = load_settings(&app);
     s.auto_delete_after_upload = enabled;
+    write_settings(&app, &s)
+}
+
+#[tauri::command]
+fn set_simple_mode(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let mut s = load_settings(&app);
+    s.simple_mode = enabled;
     write_settings(&app, &s)
 }
 
@@ -1523,6 +1556,18 @@ pub fn run() {
         .setup(|app| {
             // Tự bật theo dõi thư mục đã lưu từ lần trước
             let handle = app.handle().clone();
+            let monitor_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut last_status = String::new();
+                loop {
+                    let status = if is_game_running() { "running" } else { "offline" };
+                    if status != last_status {
+                        let _ = monitor_handle.emit("game-status", status);
+                        last_status = status.to_string();
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            });
             let settings = load_settings(&handle);
             if !settings.watch_dir.is_empty() {
                 let state = app.state::<WatchState>();
@@ -1536,6 +1581,7 @@ pub fn run() {
             probe_video,
             remux_video,
             is_game_running,
+            get_game_status,
             get_settings,
             save_settings,
             set_pause_while_game,
@@ -1564,6 +1610,7 @@ pub fn run() {
             list_cloud_videos,
             set_auto_delete_mkv,
             set_auto_delete_after_upload,
+            set_simple_mode,
             trash_local_file,
             trash_source_after_verify,
             make_thumbnail,

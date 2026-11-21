@@ -8,6 +8,7 @@ type PublicSettings = {
   performance_profile: string;
   encoder: string;
   auto_delete_after_upload: boolean;
+  simple_mode: boolean;
 };
 
 export default function SettingsPanel() {
@@ -18,6 +19,7 @@ export default function SettingsPanel() {
   const [performanceProfile, setPerformanceProfile] = useState("balanced");
   const [encoder, setEncoder] = useState("auto");
   const [autoDeleteAfterUpload, setAutoDeleteAfterUpload] = useState(false);
+  const [simpleMode, setSimpleMode] = useState(true);
   const [availableEncoders, setAvailableEncoders] = useState<string[]>(["auto"]);
   const [message, setMessage] = useState("");
   const [isOpen, setIsOpen] = useState(false);
@@ -30,6 +32,7 @@ export default function SettingsPanel() {
     setPerformanceProfile(s.performance_profile);
     setEncoder(s.encoder);
     setAutoDeleteAfterUpload(s.auto_delete_after_upload);
+    setSimpleMode(s.simple_mode);
     if (!s.worker_url || !s.has_token) setIsOpen(true);
   };
 
@@ -47,6 +50,7 @@ export default function SettingsPanel() {
       await invoke("set_performance_profile", { profile: performanceProfile });
       await invoke("set_encoder", { encoder });
       await invoke("set_auto_delete_after_upload", { enabled: autoDeleteAfterUpload });
+      await invoke("set_simple_mode", { enabled: simpleMode });
       setToken("");
       setMessage("Đã lưu cài đặt.");
       await load();
@@ -58,6 +62,15 @@ export default function SettingsPanel() {
   return (
     <details open={isOpen} onToggle={(e) => setIsOpen(e.currentTarget.open)}>
       <summary>Cài đặt Cloud</summary>
+
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={simpleMode}
+          onChange={(e) => setSimpleMode(e.target.checked)}
+        />
+        Chế độ đơn giản - chỉ hiện Cắt clip và theo dõi OBS
+      </label>
 
       <label htmlFor="worker-url">Địa chỉ Worker</label>
       <input
