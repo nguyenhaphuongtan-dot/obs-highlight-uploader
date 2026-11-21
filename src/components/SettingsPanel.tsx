@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
 
 type PublicSettings = {
   worker_url: string;
   has_token: boolean;
   pause_while_game: boolean;
+  performance_profile: string;
 };
 
 export default function SettingsPanel() {
@@ -13,6 +13,7 @@ export default function SettingsPanel() {
   const [token, setToken] = useState("");
   const [hasToken, setHasToken] = useState(false);
   const [pauseWhileGame, setPauseWhileGame] = useState(true);
+  const [performanceProfile, setPerformanceProfile] = useState("balanced");
   const [message, setMessage] = useState("");
   const [isOpen, setIsOpen] = useState(false);
 
@@ -21,6 +22,7 @@ export default function SettingsPanel() {
     setWorkerUrl(s.worker_url);
     setHasToken(s.has_token);
     setPauseWhileGame(s.pause_while_game);
+    setPerformanceProfile(s.performance_profile);
     if (!s.worker_url || !s.has_token) setIsOpen(true);
   };
 
@@ -32,6 +34,7 @@ export default function SettingsPanel() {
     try {
       await invoke("save_settings", { workerUrl, apiToken: token });
       await invoke("set_pause_while_game", { enabled: pauseWhileGame });
+      await invoke("set_performance_profile", { profile: performanceProfile });
       setToken("");
       setMessage("Đã lưu cài đặt.");
       await load();
@@ -70,15 +73,18 @@ export default function SettingsPanel() {
         Tạm dừng xử lý và upload khi Valorant đang chạy
       </label>
 
+      <label htmlFor="performance-profile">Chế độ hiệu suất</label>
+      <select
+        id="performance-profile"
+        value={performanceProfile}
+        onChange={(e) => setPerformanceProfile(e.target.value)}
+      >
+        <option value="performance">Performance - ít tải CPU nhất</option>
+        <option value="balanced">Balanced - cân bằng tốc độ/chất lượng</option>
+        <option value="quality">Quality - chất lượng cao, tốn tải nhất</option>
+      </select>
+
       <button onClick={saveSettings}>Lưu cài đặt</button>
-      {workerUrl && (
-        <button
-          type="button"
-          onClick={() => openUrl(`${workerUrl.replace(/\/$/, "")}/library`)}
-        >
-          Mở thư viện clip trên web
-        </button>
-      )}
       {message && <p className="note">{message}</p>}
     </details>
   );

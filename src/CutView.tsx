@@ -390,14 +390,9 @@ export default function CutView({ onBusyChange }: { onBusyChange?: (busy: boolea
           {probing && <p className="note">Đang đọc thông tin...</p>}
 
           {info && (
-            <pre className="info">
-              {`Độ phân giải: ${info.width}x${info.height}\n` +
-                `FPS: ${info.fps}\n` +
-                `Codec hình: ${info.videoCodec}\n` +
-                `Codec tiếng: ${info.audioCodec ?? "không có"}\n` +
-                `Thời lượng: ${(info.durationMs / 1000).toFixed(1)} giây\n` +
-                `Dung lượng: ${info.sizeMB} MB`}
-            </pre>
+            <p className="note">
+              {info.width}x{info.height} · {info.fps} FPS · {(info.durationMs / 1000).toFixed(1)} giây
+            </p>
           )}
 
           <button onClick={convert} disabled={!info || busy || !sourceExists}>

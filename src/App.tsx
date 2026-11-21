@@ -3,8 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import CutView from "./CutView";
 import ComposePanel from "./components/ComposePanel";
 import LibraryPanel from "./components/LibraryPanel";
+import QueuePanel from "./components/QueuePanel";
+import PerformancePanel from "./components/PerformancePanel";
 
-type Mode = "cut" | "compose" | "library";
+type Mode = "cut" | "compose" | "library" | "queue" | "performance";
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("cut");
@@ -79,6 +81,20 @@ export default function App() {
           >
             Thư viện
           </button>
+          <button
+            className={mode === "queue" ? "tab active" : "tab"}
+            disabled={busy}
+            onClick={() => go("queue")}
+          >
+            Hàng đợi
+          </button>
+          <button
+            className={mode === "performance" ? "tab active" : "tab"}
+            disabled={busy}
+            onClick={() => go("performance")}
+          >
+            Hiệu suất
+          </button>
         </nav>
       </header>
 
@@ -91,6 +107,12 @@ export default function App() {
       </div>
       <div className="view" style={{ display: mode === "library" ? "flex" : "none" }}>
         <LibraryPanel onBusyChange={setLibraryBusy} />
+      </div>
+      <div className="view" style={{ display: mode === "queue" ? "flex" : "none" }}>
+        <QueuePanel />
+      </div>
+      <div className="view" style={{ display: mode === "performance" ? "flex" : "none" }}>
+        <PerformancePanel />
       </div>
     </div>
   );

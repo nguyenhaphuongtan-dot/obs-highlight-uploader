@@ -27,9 +27,14 @@ export default function UploadPanel({
   const [link, setLink] = useState("");
   const [message, setMessage] = useState("");
   const startedAt = useRef(0);
+  const hasProgress = useRef(false);
 
   useEffect(() => {
     const unlistenProgress = listen<[number, number]>("upload-progress", (e) => {
+      if (!hasProgress.current) {
+        hasProgress.current = true;
+        startedAt.current = Date.now();
+      }
       setProgress(e.payload);
       if (e.payload[0] > 0) setNote("");
     });
@@ -41,6 +46,17 @@ export default function UploadPanel({
       unlistenProgress.then((f) => f());
       unlistenStatus.then((f) => f());
     };
+  }, []);
+
+  useEffect(() => {
+    invoke<{ performance_profile: string }>("get_settings").then((settings) => {
+      const defaultLimit = settings.performance_profile === "performance"
+        ? "512"
+        : settings.performance_profile === "quality"
+          ? "4096"
+          : "2048";
+      setLimit(defaultLimit);
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -57,9 +73,16 @@ export default function UploadPanel({
       const seconds = Math.max(0.5, (Date.now() - startedAt.current) / 1000);
       const mbDone = progress[0] / 1024 / 1024;
       const mbTotal = progress[1] / 1024 / 1024;
+      const speed = mbDone / seconds;
+      const remainingSeconds = speed > 0
+        ? Math.max(0, (mbTotal - mbDone) / speed)
+        : 0;
+      const remaining = remainingSeconds >= 60
+        ? `${Math.floor(remainingSeconds / 60)}m ${Math.ceil(remainingSeconds % 60)}s`
+        : `${Math.ceil(remainingSeconds)}s`;
       statusText =
         `Đang upload... ${percent.toFixed(0)}% ` +
-        `(${mbDone.toFixed(1)}/${mbTotal.toFixed(1)} MB, ${(mbDone / seconds).toFixed(1)} MB/s)`;
+        `(${mbDone.toFixed(1)}/${mbTotal.toFixed(1)} MB, ${speed.toFixed(1)} MB/s, còn ${remaining})`;
     }
   }
 
@@ -69,6 +92,20 @@ export default function UploadPanel({
   const start = async () => {
     const gameRunning = await invoke<boolean>("is_game_running");
     if (gameRunning) {
+      const settings = await invoke<{ pause_while_game: boolean }>("get_settings");
+      if (settings.pause_while_game) {
+        await invoke("add_queue_job", {
+          kind: "upload",
+          payload: {
+            path: outputPath,
+            limitKbps: Number(limit),
+            slug: buildSlug(name, addRandom),
+          },
+        });
+        setMessage("Đã thêm vào hàng đợi. Upload sẽ chạy sau khi thoát Valorant.");
+        return;
+      }
+
       const proceed = await ask(
         "Valorant đang chạy. Upload dùng băng thông mạng và có thể làm tăng ping. " +
           "Nên chọn giới hạn tốc độ thấp. Vẫn upload?",
@@ -80,6 +117,7 @@ export default function UploadPanel({
     setUploading(true);
     setLink("");
     setProgress(null);
+    hasProgress.current = false;
     setNote("");
     setMessage("Đang kết nối...");
     startedAt.current = Date.now();

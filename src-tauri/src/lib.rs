@@ -5,7 +5,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
-    time::{Duration, Instant, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use std::hash::{Hash, Hasher};
@@ -32,6 +32,7 @@ struct Settings {
     watch_dir: String,
     auto_delete_mkv: bool,
     pause_while_game: bool,
+    performance_profile: String,
 }
 
 impl Default for Settings {
@@ -42,8 +43,40 @@ impl Default for Settings {
             watch_dir: String::new(),
             auto_delete_mkv: false,
             pause_while_game: true,
+            performance_profile: "balanced".into(),
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct QueueJob {
+    id: String,
+    kind: String,
+    payload: serde_json::Value,
+    status: String,
+    retry_count: u32,
+    error: Option<String>,
+    created_at: u64,
+    updated_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+struct JobQueue {
+    #[serde(default)]
+    paused: bool,
+    #[serde(default)]
+    jobs: Vec<QueueJob>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct BenchmarkSample {
+    stage: String,
+    fps: f64,
+    ping: u32,
+    created_at: u64,
 }
 
 #[derive(Serialize)]
@@ -53,6 +86,7 @@ struct PublicSettings {
     watch_dir: String,
     auto_delete_mkv: bool,
     pause_while_game: bool,
+    performance_profile: String,
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -74,6 +108,179 @@ fn write_settings(app: &tauri::AppHandle, s: &Settings) -> Result<(), String> {
     std::fs::write(settings_path(app)?, json).map_err(|e| e.to_string())
 }
 
+fn queue_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("queue.json"))
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn load_queue(app: &tauri::AppHandle) -> JobQueue {
+    queue_path(app)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
+        .unwrap_or_default()
+}
+
+fn write_queue(app: &tauri::AppHandle, queue: &JobQueue) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(queue).map_err(|e| e.to_string())?;
+    std::fs::write(queue_path(app)?, json).map_err(|e| e.to_string())
+}
+
+fn benchmark_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("benchmarks.json"))
+}
+
+fn load_benchmarks(app: &tauri::AppHandle) -> Vec<BenchmarkSample> {
+    benchmark_path(app)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn get_queue(app: tauri::AppHandle) -> JobQueue {
+    load_queue(&app)
+}
+
+#[tauri::command]
+fn add_queue_job(
+    app: tauri::AppHandle,
+    kind: String,
+    payload: serde_json::Value,
+) -> Result<QueueJob, String> {
+    let mut queue = load_queue(&app);
+    let now = now_ms();
+    let id = format!("{}-{}", now, queue.jobs.len() + 1);
+    let job = QueueJob {
+        id,
+        kind,
+        payload,
+        status: "queued".into(),
+        retry_count: 0,
+        error: None,
+        created_at: now,
+        updated_at: now,
+    };
+    queue.jobs.push(job.clone());
+    write_queue(&app, &queue)?;
+    Ok(job)
+}
+
+#[tauri::command]
+fn update_queue_job(
+    app: tauri::AppHandle,
+    id: String,
+    status: String,
+    error: Option<String>,
+) -> Result<(), String> {
+    let mut queue = load_queue(&app);
+    let now = now_ms();
+    let Some(job) = queue.jobs.iter_mut().find(|job| job.id == id) else {
+        return Err("Không tìm thấy tác vụ trong hàng đợi.".into());
+    };
+    job.status = status;
+    job.error = error;
+    job.updated_at = now;
+    write_queue(&app, &queue)
+}
+
+#[tauri::command]
+fn pause_queue(app: tauri::AppHandle) -> Result<(), String> {
+    let mut queue = load_queue(&app);
+    queue.paused = true;
+    write_queue(&app, &queue)
+}
+
+#[tauri::command]
+fn resume_queue(app: tauri::AppHandle) -> Result<(), String> {
+    let mut queue = load_queue(&app);
+    queue.paused = false;
+    write_queue(&app, &queue)
+}
+
+#[tauri::command]
+fn retry_queue_job(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let mut queue = load_queue(&app);
+    let now = now_ms();
+    let Some(job) = queue.jobs.iter_mut().find(|job| job.id == id) else {
+        return Err("Không tìm thấy tác vụ trong hàng đợi.".into());
+    };
+    job.status = "queued".into();
+    job.error = None;
+    job.retry_count += 1;
+    job.updated_at = now;
+    write_queue(&app, &queue)
+}
+
+#[tauri::command]
+fn cancel_queue_job(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let mut queue = load_queue(&app);
+    let now = now_ms();
+    let Some(job) = queue.jobs.iter_mut().find(|job| job.id == id) else {
+        return Err("Không tìm thấy tác vụ trong hàng đợi.".into());
+    };
+    job.status = "cancelled".into();
+    job.updated_at = now;
+    write_queue(&app, &queue)
+}
+
+#[tauri::command]
+fn clear_queue_history(app: tauri::AppHandle) -> Result<(), String> {
+    let mut queue = load_queue(&app);
+    queue.jobs.retain(|job| {
+        matches!(job.status.as_str(), "queued" | "running" | "paused")
+    });
+    write_queue(&app, &queue)
+}
+
+#[tauri::command]
+fn get_benchmark_samples(app: tauri::AppHandle) -> Vec<BenchmarkSample> {
+    load_benchmarks(&app)
+}
+
+#[tauri::command]
+fn add_benchmark_sample(
+    app: tauri::AppHandle,
+    stage: String,
+    fps: f64,
+    ping: u32,
+) -> Result<(), String> {
+    if !matches!(stage.as_str(), "before" | "game_idle" | "game_queue" | "after") {
+        return Err("Mốc đo không hợp lệ.".into());
+    }
+    if !(1.0..=1000.0).contains(&fps) || ping > 1000 {
+        return Err("FPS hoặc ping không hợp lệ.".into());
+    }
+    let mut samples = load_benchmarks(&app);
+    samples.insert(
+        0,
+        BenchmarkSample {
+            stage,
+            fps,
+            ping,
+            created_at: now_ms(),
+        },
+    );
+    let json = serde_json::to_string_pretty(&samples).map_err(|e| e.to_string())?;
+    std::fs::write(benchmark_path(&app)?, json).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_benchmark_samples(app: tauri::AppHandle) -> Result<(), String> {
+    std::fs::write(benchmark_path(&app)?, "[]").map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> PublicSettings {
     let s = load_settings(&app);
@@ -83,6 +290,7 @@ fn get_settings(app: tauri::AppHandle) -> PublicSettings {
         watch_dir: s.watch_dir,
         auto_delete_mkv: s.auto_delete_mkv,
         pause_while_game: s.pause_while_game,
+        performance_profile: s.performance_profile,
     }
 }
 
@@ -159,6 +367,16 @@ fn should_pause_for_game(app: &tauri::AppHandle) -> bool {
 fn set_pause_while_game(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     let mut s = load_settings(&app);
     s.pause_while_game = enabled;
+    write_settings(&app, &s)
+}
+
+#[tauri::command]
+fn set_performance_profile(app: tauri::AppHandle, profile: String) -> Result<(), String> {
+    if !matches!(profile.as_str(), "performance" | "balanced" | "quality") {
+        return Err("Cấu hình hiệu suất không hợp lệ.".into());
+    }
+    let mut s = load_settings(&app);
+    s.performance_profile = profile;
     write_settings(&app, &s)
 }
 
@@ -394,10 +612,29 @@ async fn remux_video(
         args.push(a.into());
     }
     if precise {
-        for a in [
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-        ] {
-            args.push(a.into());
+        let profile = load_settings(&app).performance_profile;
+        match profile.as_str() {
+            "performance" => {
+                for a in [
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p",
+                ] {
+                    args.push(a.into());
+                }
+            }
+            "quality" => {
+                for a in [
+                    "-c:v", "libx264", "-preset", "slow", "-crf", "17", "-pix_fmt", "yuv420p",
+                ] {
+                    args.push(a.into());
+                }
+            }
+            _ => {
+                for a in [
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+                ] {
+                    args.push(a.into());
+                }
+            }
         }
     } else {
         for a in ["-c:v", "copy", "-avoid_negative_ts", "make_zero"] {
@@ -1027,11 +1264,31 @@ async fn run_ffmpeg(
     }
     state.cancel.store(false, Ordering::Relaxed);
 
+    let profile = load_settings(&app).performance_profile;
+    let (preset, crf) = match profile.as_str() {
+        "performance" => ("ultrafast", "24"),
+        "quality" => ("slow", "17"),
+        _ => ("veryfast", "20"),
+    };
+    let mut normalized_args = args;
+    for i in 0..normalized_args.len() {
+        if normalized_args[i] == "-preset" {
+            if let Some(value) = normalized_args.get_mut(i + 1) {
+                *value = preset.into();
+            }
+        }
+        if normalized_args[i] == "-crf" {
+            if let Some(value) = normalized_args.get_mut(i + 1) {
+                *value = crf.into();
+            }
+        }
+    }
+
     let mut full: Vec<String> = ["-hide_banner", "-nostdin", "-progress", "pipe:1", "-nostats"]
         .iter()
         .map(|s| s.to_string())
         .collect();
-    full.extend(args);
+    full.extend(normalized_args);
 
     let (mut rx, child) = app
         .shell()
@@ -1125,6 +1382,18 @@ pub fn run() {
             get_settings,
             save_settings,
             set_pause_while_game,
+            set_performance_profile,
+            get_queue,
+            add_queue_job,
+            update_queue_job,
+            pause_queue,
+            resume_queue,
+            retry_queue_job,
+            cancel_queue_job,
+            clear_queue_history,
+            get_benchmark_samples,
+            add_benchmark_sample,
+            clear_benchmark_samples,
             set_watch_dir,
             list_clips,
             load_library,

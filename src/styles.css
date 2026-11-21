@@ -562,6 +562,152 @@ input[type="range"] {
   text-align: center;
 }
 
+.queue-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.queue-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+  max-width: 720px;
+}
+
+.queue-toolbar button {
+  flex: 1;
+}
+
+.queue-list {
+  display: grid;
+  gap: 8px;
+  max-width: 900px;
+}
+
+.queue-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #34343b;
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.queue-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.queue-main .badge {
+  margin-left: 8px;
+}
+
+.queue-status.running,
+.queue-status.queued {
+  background: #274d63;
+  color: #b9eaff;
+}
+
+.queue-status.completed {
+  background: #294d35;
+  color: #b9e9c5;
+}
+
+.queue-status.failed {
+  background: #55343a;
+  color: #ffdfe5;
+}
+
+.queue-error {
+  margin: 6px 0 0;
+  color: #ff9dab;
+  word-break: break-word;
+}
+
+.queue-actions {
+  width: 110px;
+}
+
+.performance-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: minmax(300px, 430px) minmax(360px, 1fr);
+  gap: 12px;
+  padding: 14px;
+}
+
+.performance-card,
+.benchmark-history {
+  align-self: start;
+  padding: 14px;
+  border: 1px solid #34343b;
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.performance-card h2,
+.benchmark-history h2 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.benchmark-fields {
+  display: grid;
+  grid-template-columns: 1fr 100px 100px;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.benchmark-fields label {
+  margin: 0;
+}
+
+.benchmark-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.benchmark-actions button {
+  flex: 1;
+}
+
+.benchmark-list {
+  display: grid;
+  gap: 6px;
+}
+
+.benchmark-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.4fr) 70px 70px 150px;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border-bottom: 1px solid #34343b;
+}
+
+.benchmark-row time {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+@media (max-width: 1000px) {
+  .performance-view {
+    grid-template-columns: 1fr;
+  }
+  .benchmark-row {
+    grid-template-columns: 1fr 70px 70px;
+  }
+  .benchmark-row time {
+    grid-column: 1 / -1;
+  }
+}
+
 /* ---------- Dựng phim ---------- */
 
 .src {
