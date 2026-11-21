@@ -3,14 +3,23 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ProgressBar from "./ProgressBar";
+import { buildSlug, slugify } from "../slug";
 
 type Props = {
   outputPath: string;
+  suggestedName?: string;
   onBusyChange: (busy: boolean) => void;
   onUploaded: (url: string) => void;
 };
 
-export default function UploadPanel({ outputPath, onBusyChange, onUploaded }: Props) {
+export default function UploadPanel({
+  outputPath,
+  suggestedName,
+  onBusyChange,
+  onUploaded,
+}: Props) {
+  const [name, setName] = useState(suggestedName ?? "");
+  const [addRandom, setAddRandom] = useState(true);
   const [limit, setLimit] = useState("2048");
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState<[number, number] | null>(null);
@@ -54,6 +63,9 @@ export default function UploadPanel({ outputPath, onBusyChange, onUploaded }: Pr
     }
   }
 
+  const base = slugify(name);
+  const preview = base ? (addRandom ? `${base}-xxxx` : base) : "(mã ngẫu nhiên)";
+
   const start = async () => {
     const gameRunning = await invoke<boolean>("is_game_running");
     if (gameRunning) {
@@ -76,6 +88,7 @@ export default function UploadPanel({ outputPath, onBusyChange, onUploaded }: Pr
       const url = await invoke<string>("upload_video", {
         path: outputPath,
         limitKbps: Number(limit),
+        slug: buildSlug(name, addRandom),
       });
       setLink(url);
       onUploaded(url);
@@ -106,6 +119,30 @@ export default function UploadPanel({ outputPath, onBusyChange, onUploaded }: Pr
 
   return (
     <section className="card">
+      <label htmlFor="slug-name">Tên link (tùy chọn)</label>
+      <input
+        id="slug-name"
+        value={name}
+        disabled={uploading}
+        placeholder="ví dụ: kill x3 bind A"
+        onChange={(e) => setName(e.target.value)}
+      />
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={addRandom}
+          disabled={uploading}
+          onChange={(e) => setAddRandom(e.target.checked)}
+        />
+        Thêm mã ngẫu nhiên ngắn để khó đoán
+      </label>
+      <p className="note">Link sẽ có dạng: .../v/{preview}</p>
+      {!addRandom && base && (
+        <p className="note">
+          Lưu ý: tên không có mã ngẫu nhiên thì ai đoán được tên cũng xem được video.
+        </p>
+      )}
+
       <label htmlFor="limit">Giới hạn tốc độ upload</label>
       <select
         id="limit"

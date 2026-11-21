@@ -13,7 +13,10 @@ use futures_util::StreamExt;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
-use tauri_plugin_shell::{process::CommandEvent, ShellExt};
+use tauri_plugin_shell::{
+    process::{CommandChild, CommandEvent},
+    ShellExt,
+};
 use tokio_util::io::ReaderStream;
 
 // Tên tiến trình game cần cảnh báo
@@ -48,7 +51,7 @@ fn load_settings(app: &tauri::AppHandle) -> Settings {
     settings_path(app)
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
         .unwrap_or_default()
 }
 
@@ -75,7 +78,13 @@ fn save_settings(
     api_token: String,
 ) -> Result<(), String> {
     let mut s = load_settings(&app);
-    s.worker_url = worker_url.trim().trim_end_matches('/').to_string();
+    s.worker_url = worker_url
+        .trim()
+        .trim_end_matches('/')
+        .replace(
+            "https://nghapiti-highlight.hl-clips.workers.dev",
+            "https://nghapiti-highlight.hl-clips.workers.dev",
+        );
     if !api_token.trim().is_empty() {
         s.api_token = api_token.trim().to_string();
     }
@@ -553,6 +562,7 @@ struct UploadState {
 struct UploadTicket {
     upload_url: String,
     view_url: String,
+    thumb_upload_url: Option<String>,
 }
 
 enum UploadError {
@@ -569,13 +579,16 @@ fn cancel_upload(state: State<'_, UploadState>) {
 }
 
 // Xin link upload tạm từ Worker
+// Xin link upload tạm từ Worker
 async fn request_ticket(
     client: &reqwest::Client,
     settings: &Settings,
+    slug: &str,
 ) -> Result<UploadTicket, UploadError> {
     let res = client
         .post(format!("{}/api/uploads", settings.worker_url))
         .bearer_auth(&settings.api_token)
+        .json(&serde_json::json!({ "slug": slug }))
         .timeout(Duration::from_secs(30))
         .send()
         .await
@@ -592,10 +605,30 @@ async fn request_ticket(
             "Mã bí mật không đúng. Hãy kiểm tra lại API_TOKEN trong Cài đặt Cloud.".into(),
         ));
     }
+    if status.as_u16() == 409 {
+        return Err(UploadError::Fatal(
+            "Tên link này đã có người dùng. Hãy chọn tên khác.".into(),
+        ));
+    }
+    if status.as_u16() == 400 {
+        return Err(UploadError::Fatal(
+            "Tên link không hợp lệ (chỉ chữ thường, số và dấu gạch ngang, dài 6 đến 48 ký tự).".into(),
+        ));
+    }
     if status.is_server_error() {
+        if status.as_u16() == 503 {
+            return Err(UploadError::Fatal(
+                "Worker chưa cấu hình khóa Backblaze. Hãy đặt lại B2_KEY_ID và B2_APP_KEY trong Cloudflare Worker.".into(),
+            ));
+        }
         return Err(UploadError::Retryable(format!("Worker đang lỗi ({status}).")));
     }
     if !status.is_success() {
+        if status.as_u16() == 404 {
+            return Err(UploadError::Fatal(
+                "Không tìm thấy Worker API (404). Hãy đặt Địa chỉ Worker là https://nghapiti-highlight.hl-clips.workers.dev (không thêm /api/uploads).".into(),
+            ));
+        }
         return Err(UploadError::Fatal(format!(
             "Worker từ chối yêu cầu ({status}). Kiểm tra địa chỉ Worker."
         )));
@@ -702,14 +735,73 @@ async fn put_file(
         )))
     }
 }
+// Tạo ảnh xem trước 1280px từ video và upload kèm. Lỗi ở bước này không làm hỏng upload.
+async fn upload_thumbnail(
+    app: &tauri::AppHandle,
+    client: &reqwest::Client,
+    video: &str,
+    url: &str,
+) -> Result<(), String> {
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("thumbs");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let out = dir.join("upload-preview.jpg");
+    let _ = std::fs::remove_file(&out);
+    let out_str = out.to_string_lossy().to_string();
 
+    // Lấy khung hình ở giây thứ 1, nếu video quá ngắn thì lấy khung đầu
+    for seek in ["1", "0"] {
+        let _ = app
+            .shell()
+            .sidecar("ffmpeg")
+            .map_err(|e| e.to_string())?
+            .args([
+                "-y", "-ss", seek,
+                "-i", video,
+                "-frames:v", "1",
+                "-vf", "scale=1280:-2",
+                "-q:v", "3",
+                out_str.as_str(),
+            ])
+            .output()
+            .await;
+        if has_file(&out) {
+            break;
+        }
+    }
+
+    let bytes = std::fs::read(&out).map_err(|e| e.to_string())?;
+    if bytes.is_empty() {
+        return Err("Ảnh xem trước rỗng.".into());
+    }
+
+    let res = client
+        .put(url)
+        .header(reqwest::header::CONTENT_TYPE, "image/jpeg")
+        .timeout(Duration::from_secs(60))
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if res.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("Upload ảnh xem trước lỗi ({})", res.status()))
+    }
+}
 #[tauri::command]
 async fn upload_video(
     app: tauri::AppHandle,
     state: State<'_, UploadState>,
     path: String,
     limit_kbps: u64, // 0 = không giới hạn
+    slug: Option<String>,
 ) -> Result<String, String> {
+    let slug = slug.unwrap_or_default();
     let settings = load_settings(&app);
     if settings.worker_url.is_empty() || settings.api_token.is_empty() {
         return Err("Chưa cài đặt địa chỉ Worker hoặc mã bí mật.".into());
@@ -745,7 +837,7 @@ async fn upload_video(
         }
 
         let outcome = async {
-            let ticket = request_ticket(&client, &settings).await?;
+            let ticket = request_ticket(&client, &settings, &slug).await?;
             put_file(
                 &app,
                 &client,
@@ -755,6 +847,13 @@ async fn upload_video(
                 cancel.clone(),
             )
             .await?;
+
+            if let Some(thumb_url) = &ticket.thumb_upload_url {
+                if let Err(e) = upload_thumbnail(&app, &client, &path, thumb_url).await {
+                    println!("Không upload được ảnh xem trước: {e}");
+                }
+            }
+
             Ok::<String, UploadError>(ticket.view_url)
         }
         .await;
@@ -783,7 +882,7 @@ async fn delete_video(app: tauri::AppHandle, view_url: String) -> Result<(), Str
 
     // view_url có dạng https://worker/v/ID, lấy phần ID cuối
     let id = view_url.trim_end_matches('/').rsplit('/').next().unwrap_or("");
-    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return Err("Link video không hợp lệ.".into());
     }
 
@@ -802,12 +901,136 @@ async fn delete_video(app: tauri::AppHandle, view_url: String) -> Result<(), Str
     }
     Ok(())
 }
+// ---------- Dự án dựng phim ----------
 
+fn projects_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("projects.json"))
+}
+
+#[tauri::command]
+fn load_projects(app: tauri::AppHandle) -> String {
+    projects_path(&app)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_else(|| "[]".to_string())
+}
+
+#[tauri::command]
+fn save_projects(app: tauri::AppHandle, json: String) -> Result<(), String> {
+    serde_json::from_str::<serde_json::Value>(&json)
+        .map_err(|e| format!("Dữ liệu không hợp lệ: {e}"))?;
+    std::fs::write(projects_path(&app)?, json).map_err(|e| e.to_string())
+}
+
+// Xóa file MP4 dang dở sau khi dựng thất bại hoặc bị hủy
+#[tauri::command]
+fn remove_partial(path: String) {
+    let p = Path::new(&path);
+    if p.extension()
+        .map(|e| e.eq_ignore_ascii_case("mp4"))
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+// ---------- Dựng phim: chạy FFmpeg với tham số do giao diện dựng ----------
+
+#[derive(Default)]
+struct ComposeState {
+    child: Mutex<Option<CommandChild>>,
+    cancel: Arc<AtomicBool>,
+}
+
+#[tauri::command]
+async fn run_ffmpeg(
+    app: tauri::AppHandle,
+    state: State<'_, ComposeState>,
+    args: Vec<String>,
+) -> Result<(), String> {
+    if args.is_empty() {
+        return Err("Thiếu tham số FFmpeg.".into());
+    }
+    state.cancel.store(false, Ordering::Relaxed);
+
+    let mut full: Vec<String> = ["-hide_banner", "-nostdin", "-progress", "pipe:1", "-nostats"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    full.extend(args);
+
+    let (mut rx, child) = app
+        .shell()
+        .sidecar("ffmpeg")
+        .map_err(|e| e.to_string())?
+        .args(full)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    let pid = child.pid();
+    if set_below_normal_priority(pid) {
+        println!("FFmpeg dựng phim (pid {pid}) đã đặt mức ưu tiên Below Normal");
+    }
+    *state.child.lock().unwrap() = Some(child);
+
+    let mut tail: Vec<String> = Vec::new();
+
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(line) => {
+                let text = String::from_utf8_lossy(&line);
+                for l in text.lines() {
+                    if let Some(v) = l.strip_prefix("out_time_us=") {
+                        if let Ok(us) = v.trim().parse::<u64>() {
+                            let _ = app.emit("compose-progress", us / 1000);
+                        }
+                    }
+                }
+            }
+            CommandEvent::Stderr(line) => {
+                for l in String::from_utf8_lossy(&line).lines() {
+                    if !l.trim().is_empty() {
+                        tail.push(l.to_string());
+                        if tail.len() > 12 {
+                            tail.remove(0);
+                        }
+                    }
+                }
+            }
+            CommandEvent::Terminated(p) => {
+                state.child.lock().unwrap().take();
+                if state.cancel.load(Ordering::Relaxed) {
+                    return Err("Đã hủy dựng phim.".into());
+                }
+                return if p.code == Some(0) {
+                    Ok(())
+                } else {
+                    Err(format!("FFmpeg lỗi (mã {:?}):\n{}", p.code, tail.join("\n")))
+                };
+            }
+            _ => {}
+        }
+    }
+
+    state.child.lock().unwrap().take();
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_ffmpeg(state: State<'_, ComposeState>) {
+    state.cancel.store(true, Ordering::Relaxed);
+    if let Some(child) = state.child.lock().unwrap().take() {
+        let _ = child.kill();
+    }
+}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(UploadState::default())
         .manage(WatchState::default())
+        .manage(ComposeState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
@@ -839,7 +1062,12 @@ pub fn run() {
             delete_video,
             set_auto_delete_mkv,
             trash_source_after_verify,
-            make_thumbnail
+            make_thumbnail,
+            load_projects,
+            save_projects,
+            remove_partial,
+            run_ffmpeg,
+            cancel_ffmpeg
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
