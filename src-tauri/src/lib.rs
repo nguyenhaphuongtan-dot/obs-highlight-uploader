@@ -33,6 +33,9 @@ struct Settings {
     auto_delete_mkv: bool,
     pause_while_game: bool,
     performance_profile: String,
+    encoder: String,
+    optimization_applied: bool,
+    auto_delete_after_upload: bool,
 }
 
 impl Default for Settings {
@@ -44,6 +47,9 @@ impl Default for Settings {
             auto_delete_mkv: false,
             pause_while_game: true,
             performance_profile: "balanced".into(),
+            encoder: "auto".into(),
+            optimization_applied: false,
+            auto_delete_after_upload: false,
         }
     }
 }
@@ -87,6 +93,8 @@ struct PublicSettings {
     auto_delete_mkv: bool,
     pause_while_game: bool,
     performance_profile: String,
+    encoder: String,
+    auto_delete_after_upload: bool,
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -96,11 +104,19 @@ fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 fn load_settings(app: &tauri::AppHandle) -> Settings {
-    settings_path(app)
+    let mut s: Settings = settings_path(app)
         .ok()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if s.worker_url == "https://nghapiti-highlight.hl-clips.workers.dev"
+        || s.worker_url == "https://nghapiti-highlight.nghapiti.workers.dev"
+        || s.worker_url == "https://nhapiti-highlight.hl-clips.workers.dev"
+    {
+        s.worker_url = "https://highlight.nghapiti.workers.dev".into();
+        let _ = write_settings(app, &s);
+    }
+    s
 }
 
 fn write_settings(app: &tauri::AppHandle, s: &Settings) -> Result<(), String> {
@@ -283,7 +299,14 @@ fn clear_benchmark_samples(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> PublicSettings {
-    let s = load_settings(&app);
+    let mut s = load_settings(&app);
+    if !s.optimization_applied {
+        s.pause_while_game = true;
+        s.performance_profile = "performance".into();
+        s.encoder = "amf".into();
+        s.optimization_applied = true;
+        let _ = write_settings(&app, &s);
+    }
     PublicSettings {
         worker_url: s.worker_url,
         has_token: !s.api_token.is_empty(),
@@ -291,6 +314,8 @@ fn get_settings(app: tauri::AppHandle) -> PublicSettings {
         auto_delete_mkv: s.auto_delete_mkv,
         pause_while_game: s.pause_while_game,
         performance_profile: s.performance_profile,
+        encoder: s.encoder,
+        auto_delete_after_upload: s.auto_delete_after_upload,
     }
 }
 
@@ -306,7 +331,15 @@ fn save_settings(
         .trim_end_matches('/')
         .replace(
             "https://nghapiti-highlight.hl-clips.workers.dev",
-            "https://nghapiti-highlight.hl-clips.workers.dev",
+            "https://highlight.nghapiti.workers.dev",
+        )
+        .replace(
+            "https://nghapiti-highlight.nghapiti.workers.dev",
+            "https://highlight.nghapiti.workers.dev",
+        )
+        .replace(
+            "https://nhapiti-highlight.hl-clips.workers.dev",
+            "https://highlight.nghapiti.workers.dev",
         );
     if !api_token.trim().is_empty() {
         s.api_token = api_token.trim().to_string();
@@ -378,6 +411,35 @@ fn set_performance_profile(app: tauri::AppHandle, profile: String) -> Result<(),
     let mut s = load_settings(&app);
     s.performance_profile = profile;
     write_settings(&app, &s)
+}
+
+#[tauri::command]
+fn set_encoder(app: tauri::AppHandle, encoder: String) -> Result<(), String> {
+    if !matches!(encoder.as_str(), "auto" | "amf" | "nvenc" | "qsv" | "x264") {
+        return Err("Bộ mã hóa không hợp lệ.".into());
+    }
+    let mut s = load_settings(&app);
+    s.encoder = encoder;
+    write_settings(&app, &s)
+}
+
+#[tauri::command]
+async fn get_available_encoders(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let output = app
+        .shell()
+        .sidecar("ffmpeg")
+        .map_err(|e| e.to_string())?
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut encoders = vec!["x264".to_string()];
+    if text.contains("h264_amf") { encoders.insert(0, "amf".to_string()); }
+    if text.contains("h264_nvenc") { encoders.push("nvenc".to_string()); }
+    if text.contains("h264_qsv") { encoders.push("qsv".to_string()); }
+    encoders.push("auto".to_string());
+    Ok(encoders)
 }
 
 // ---------- Theo dõi thư mục clip ----------
@@ -613,28 +675,50 @@ async fn remux_video(
     }
     if precise {
         let profile = load_settings(&app).performance_profile;
-        match profile.as_str() {
+        let settings = load_settings(&app);
+        let encoder = if settings.encoder == "auto" {
+            "amf"
+        } else {
+            settings.encoder.as_str()
+        };
+        let quality_args = match profile.as_str() {
             "performance" => {
-                for a in [
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p",
-                ] {
-                    args.push(a.into());
-                }
+                vec!["quality", "speed", "ultrafast", "24"]
             }
             "quality" => {
-                for a in [
-                    "-c:v", "libx264", "-preset", "slow", "-crf", "17", "-pix_fmt", "yuv420p",
-                ] {
-                    args.push(a.into());
-                }
+                vec!["quality", "balanced", "slow", "17"]
             }
             _ => {
-                for a in [
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-                ] {
-                    args.push(a.into());
-                }
+                vec!["quality", "balanced", "veryfast", "20"]
             }
+        };
+        match encoder {
+            "amf" => args.extend([
+                "-c:v".into(), "h264_amf".into(),
+                "-quality".into(), quality_args[1].into(),
+                "-rc".into(), "vbr_latency".into(),
+                "-qmin".into(), "18".into(),
+                "-qmax".into(), "32".into(),
+                "-pix_fmt".into(), "yuv420p".into(),
+            ]),
+            "nvenc" => args.extend([
+                "-c:v".into(), "h264_nvenc".into(),
+                "-preset".into(), if profile == "quality" { "p7" } else { "p5" }.into(),
+                "-cq".into(), quality_args[3].into(),
+                "-pix_fmt".into(), "yuv420p".into(),
+            ]),
+            "qsv" => args.extend([
+                "-c:v".into(), "h264_qsv".into(),
+                "-preset".into(), quality_args[2].into(),
+                "-global_quality".into(), quality_args[3].into(),
+                "-pix_fmt".into(), "yuv420p".into(),
+            ]),
+            _ => args.extend([
+                "-c:v".into(), "libx264".into(),
+                "-preset".into(), quality_args[2].into(),
+                "-crf".into(), quality_args[3].into(),
+                "-pix_fmt".into(), "yuv420p".into(),
+            ]),
         }
     } else {
         for a in ["-c:v", "copy", "-avoid_negative_ts", "make_zero"] {
@@ -760,6 +844,28 @@ fn set_auto_delete_mkv(app: tauri::AppHandle, enabled: bool) -> Result<(), Strin
     let mut s = load_settings(&app);
     s.auto_delete_mkv = enabled;
     write_settings(&app, &s)
+}
+
+#[tauri::command]
+fn set_auto_delete_after_upload(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let mut s = load_settings(&app);
+    s.auto_delete_after_upload = enabled;
+    write_settings(&app, &s)
+}
+
+#[tauri::command]
+fn trash_local_file(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.is_file() {
+        return Ok(());
+    }
+    if !matches!(
+        p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()),
+        Some(ext) if ext == "mkv" || ext == "mp4"
+    ) {
+        return Err("Chỉ có thể xóa file MKV hoặc MP4.".into());
+    }
+    trash::delete(p).map_err(|e| format!("Không chuyển được file vào Thùng rác: {e}"))
 }
 
 // Chỉ chuyển MKV vào Thùng rác khi MP4 đã được kiểm tra hợp lệ
@@ -1265,21 +1371,72 @@ async fn run_ffmpeg(
     state.cancel.store(false, Ordering::Relaxed);
 
     let profile = load_settings(&app).performance_profile;
+    let settings = load_settings(&app);
+    let encoder = if settings.encoder == "auto" {
+        "amf"
+    } else {
+        settings.encoder.as_str()
+    };
     let (preset, crf) = match profile.as_str() {
         "performance" => ("ultrafast", "24"),
         "quality" => ("slow", "17"),
         _ => ("veryfast", "20"),
     };
     let mut normalized_args = args;
-    for i in 0..normalized_args.len() {
-        if normalized_args[i] == "-preset" {
-            if let Some(value) = normalized_args.get_mut(i + 1) {
-                *value = preset.into();
+    if matches!(encoder, "amf" | "nvenc" | "qsv") {
+        let mut filtered: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < normalized_args.len() {
+            if normalized_args[i] == "-c:v" {
+                filtered.push(normalized_args[i].clone());
+                filtered.push(match encoder {
+                    "amf" => "h264_amf".into(),
+                    "nvenc" => "h264_nvenc".into(),
+                    "qsv" => "h264_qsv".into(),
+                    _ => "libx264".into(),
+                });
+                i += 2;
+            } else if normalized_args[i] == "-preset" || normalized_args[i] == "-crf" {
+                i += 2;
+            } else {
+                filtered.push(normalized_args[i].clone());
+                i += 1;
             }
         }
-        if normalized_args[i] == "-crf" {
-            if let Some(value) = normalized_args.get_mut(i + 1) {
-                *value = crf.into();
+        let output = filtered.pop();
+        if encoder == "amf" {
+            filtered.extend([
+                "-quality".into(),
+                if profile == "performance" { "speed" } else { "balanced" }.into(),
+                "-rc".into(),
+                "vbr_latency".into(),
+            ]);
+        } else if encoder == "nvenc" {
+            filtered.extend([
+                "-preset".into(),
+                if profile == "quality" { "p7" } else { "p5" }.into(),
+                "-cq".into(),
+                crf.into(),
+            ]);
+        } else {
+            filtered.extend([
+                "-preset".into(),
+                preset.into(),
+                "-global_quality".into(),
+                crf.into(),
+            ]);
+        }
+        if let Some(output) = output {
+            filtered.push(output);
+        }
+        normalized_args = filtered;
+    } else {
+        for i in 0..normalized_args.len() {
+            if normalized_args[i] == "-preset" {
+                if let Some(value) = normalized_args.get_mut(i + 1) { *value = preset.into(); }
+            }
+            if normalized_args[i] == "-crf" {
+                if let Some(value) = normalized_args.get_mut(i + 1) { *value = crf.into(); }
             }
         }
     }
@@ -1383,6 +1540,8 @@ pub fn run() {
             save_settings,
             set_pause_while_game,
             set_performance_profile,
+            set_encoder,
+            get_available_encoders,
             get_queue,
             add_queue_job,
             update_queue_job,
@@ -1404,6 +1563,8 @@ pub fn run() {
             delete_video,
             list_cloud_videos,
             set_auto_delete_mkv,
+            set_auto_delete_after_upload,
+            trash_local_file,
             trash_source_after_verify,
             make_thumbnail,
             load_projects,

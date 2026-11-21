@@ -19,8 +19,8 @@ export default function UploadPanel({
   onUploaded,
 }: Props) {
   const [name, setName] = useState(suggestedName ?? "");
-  const [addRandom, setAddRandom] = useState(true);
-  const [limit, setLimit] = useState("2048");
+  const [addRandom, setAddRandom] = useState(false);
+  const [limit, setLimit] = useState("512");
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState<[number, number] | null>(null);
   const [note, setNote] = useState("");
@@ -130,6 +130,17 @@ export default function UploadPanel({
       });
       setLink(url);
       onUploaded(url);
+      const settings = await invoke<{
+        auto_delete_after_upload: boolean;
+      }>("get_settings");
+      if (settings.auto_delete_after_upload) {
+        try {
+          await invoke("trash_local_file", { path: outputPath });
+        } catch (e) {
+          setMessage(`Upload xong nhưng không thể xóa file local: ${e}`);
+          return;
+        }
+      }
       try {
         await navigator.clipboard.writeText(url);
         setMessage("Upload xong! Link đã được sao chép.");

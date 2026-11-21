@@ -6,6 +6,8 @@ type PublicSettings = {
   has_token: boolean;
   pause_while_game: boolean;
   performance_profile: string;
+  encoder: string;
+  auto_delete_after_upload: boolean;
 };
 
 export default function SettingsPanel() {
@@ -14,6 +16,9 @@ export default function SettingsPanel() {
   const [hasToken, setHasToken] = useState(false);
   const [pauseWhileGame, setPauseWhileGame] = useState(true);
   const [performanceProfile, setPerformanceProfile] = useState("balanced");
+  const [encoder, setEncoder] = useState("auto");
+  const [autoDeleteAfterUpload, setAutoDeleteAfterUpload] = useState(false);
+  const [availableEncoders, setAvailableEncoders] = useState<string[]>(["auto"]);
   const [message, setMessage] = useState("");
   const [isOpen, setIsOpen] = useState(false);
 
@@ -23,11 +28,16 @@ export default function SettingsPanel() {
     setHasToken(s.has_token);
     setPauseWhileGame(s.pause_while_game);
     setPerformanceProfile(s.performance_profile);
+    setEncoder(s.encoder);
+    setAutoDeleteAfterUpload(s.auto_delete_after_upload);
     if (!s.worker_url || !s.has_token) setIsOpen(true);
   };
 
   useEffect(() => {
     load();
+    invoke<string[]>("get_available_encoders")
+      .then(setAvailableEncoders)
+      .catch(() => {});
   }, []);
 
   const saveSettings = async () => {
@@ -35,6 +45,8 @@ export default function SettingsPanel() {
       await invoke("save_settings", { workerUrl, apiToken: token });
       await invoke("set_pause_while_game", { enabled: pauseWhileGame });
       await invoke("set_performance_profile", { profile: performanceProfile });
+      await invoke("set_encoder", { encoder });
+      await invoke("set_auto_delete_after_upload", { enabled: autoDeleteAfterUpload });
       setToken("");
       setMessage("Đã lưu cài đặt.");
       await load();
@@ -51,7 +63,7 @@ export default function SettingsPanel() {
       <input
         id="worker-url"
         value={workerUrl}
-        placeholder="https://nghapiti-highlight.hl-clips.workers.dev"
+        placeholder="https://highlight.nghapiti.workers.dev"
         onChange={(e) => setWorkerUrl(e.target.value)}
       />
 
@@ -83,6 +95,36 @@ export default function SettingsPanel() {
         <option value="balanced">Balanced - cân bằng tốc độ/chất lượng</option>
         <option value="quality">Quality - chất lượng cao, tốn tải nhất</option>
       </select>
+
+      <label htmlFor="encoder">Bộ mã hóa video</label>
+      <select
+        id="encoder"
+        value={encoder}
+        onChange={(e) => setEncoder(e.target.value)}
+      >
+        {availableEncoders.map((value) => (
+          <option key={value} value={value}>
+            {value === "auto"
+              ? "Tự động (ưu tiên GPU)"
+              : value === "amf"
+                ? "AMD AMF"
+                : value === "nvenc"
+                  ? "NVIDIA NVENC"
+                  : value === "qsv"
+                    ? "Intel Quick Sync"
+                    : "CPU x264"}
+          </option>
+        ))}
+      </select>
+
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={autoDeleteAfterUpload}
+          onChange={(e) => setAutoDeleteAfterUpload(e.target.checked)}
+        />
+        Tự chuyển file đã upload vào Thùng rác
+      </label>
 
       <button onClick={saveSettings}>Lưu cài đặt</button>
       {message && <p className="note">{message}</p>}

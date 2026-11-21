@@ -92,7 +92,7 @@ async function createUpload(request: Request, env: Env): Promise<Response> {
     id,
     uploadUrl: video.url,
     thumbUploadUrl: thumb.url,
-    viewUrl: `${origin}/v/${id}`,
+    viewUrl: `${origin}/${id}`,
   });
 }
 
@@ -316,7 +316,7 @@ function galleryPage(): Response {
         actions.className = "actions";
         var view = document.createElement("a");
         view.className = "link";
-        view.href = "/v/" + encodeURIComponent(video.id);
+        view.href = "/" + encodeURIComponent(video.id);
         view.textContent = "Xem";
         var copy = document.createElement("button");
         copy.className = "secondary";
@@ -370,7 +370,7 @@ async function viewerPage(request: Request, env: Env, id: string): Promise<Respo
 
   // Chỉ bot (Discord, Telegram...) mới cần thẻ xem trước, và chỉ khi video có ảnh xem trước
   if (CRAWLER.test(ua) && (await objectExists(env, `videos/${id}.jpg`))) {
-    const page = `${origin}/v/${id}`;
+    const page = `${origin}/${id}`;
     const video = `${origin}/media/${id}.mp4`;
     const image = `${origin}/thumb/${id}.jpg`;
     meta = `
@@ -443,6 +443,12 @@ export default {
     }
     if (readOnly && pathname.startsWith("/v/")) {
       return viewerPage(request, env, pathname.slice("/v/".length));
+    }
+    if (readOnly && pathname.length > 1) {
+      const id = pathname.slice(1).replace(/\/$/, "");
+      if (ID_PATTERN.test(id)) {
+        return viewerPage(request, env, id);
+      }
     }
     return new Response("Not found", { status: 404 });
   },

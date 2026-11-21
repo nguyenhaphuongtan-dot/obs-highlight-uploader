@@ -22,7 +22,19 @@ describe("Highlight Worker", () => {
 	});
 
 	it("returns not found for unknown routes", async () => {
-		const response = await SELF.fetch("https://example.com/unknown");
+		const response = await SELF.fetch("https://example.com/unknown_route");
 		expect(response.status).toBe(404);
+	});
+
+	it("keeps the legacy view route", async () => {
+		const response = await SELF.fetch("https://example.com/v/4k-zuize");
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain("4k-zuize");
+	});
+
+	it("supports short view routes", async () => {
+		const response = await SELF.fetch("https://example.com/4k-zuize");
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain("4k-zuize");
 	});
 });

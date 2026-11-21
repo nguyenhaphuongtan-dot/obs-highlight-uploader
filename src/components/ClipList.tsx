@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { ask } from "@tauri-apps/plugin-dialog";
 import type { ClipRecord, Library } from "../library";
 
 type Clip = {
@@ -95,6 +96,35 @@ export default function ClipList({ library, refreshKey, onSelect, onDelete, disa
       setMessage("Đã sao chép link.");
     } catch {
       setMessage("Không sao chép tự động được. Link: " + url);
+    }
+  };
+
+  const trashLocal = async (item: Item) => {
+    const mkvPath = clips.find((clip) => clip.path === item.key)?.path;
+    const mp4Path = item.rec?.mp4Path;
+    const labels: string[] = [];
+    if (mkvPath) labels.push("MKV");
+    if (mp4Path) labels.push("MP4");
+    if (labels.length === 0) return;
+
+    const confirmed = await ask(
+      `Chuyển ${labels.join(" và ")} của "${item.name}" vào Thùng rác?`,
+      { title: "Xóa file trên máy", kind: "warning", okLabel: "Chuyển vào Thùng rác", cancelLabel: "Hủy" }
+    );
+    if (!confirmed) return;
+
+    try {
+      if (mkvPath) await invoke("trash_local_file", { path: mkvPath });
+      if (mp4Path) await invoke("trash_local_file", { path: mp4Path });
+      setMessage("Đã chuyển file vào Thùng rác.");
+      await refresh(dir);
+      setThumbs((prev) => {
+        const next = { ...prev };
+        delete next[item.key];
+        return next;
+      });
+    } catch (e) {
+      setMessage("Lỗi: " + e);
     }
   };
 
@@ -200,6 +230,9 @@ export default function ClipList({ library, refreshKey, onSelect, onDelete, disa
                 )}
                 <button disabled={disabled} onClick={() => onSelect(c.key)}>
                   Dùng clip này
+                </button>
+                <button className="danger" disabled={disabled} onClick={() => trashLocal(c)}>
+                  Xóa file trên máy
                 </button>
               </div>
             </li>

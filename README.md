@@ -37,11 +37,11 @@ npm run deploy
 
 Địa chỉ Worker mặc định cho bản hiện tại:
 
-`https://nghapiti-highlight.hl-clips.workers.dev`
+`https://highlight.nghapiti.workers.dev`
 
 Trang thư viện clip:
 
-`https://nghapiti-highlight.hl-clips.workers.dev/library`
+`https://highlight.nghapiti.workers.dev/library`
 
 This template should help get you started developing with Tauri in vanilla HTML, CSS and Typescript.
 
